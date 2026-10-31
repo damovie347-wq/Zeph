@@ -364,9 +364,13 @@ class CascadingWifiDirectManager(
         return null
     }
 
-    private fun handleSingleDiscoveredDevice(device: WifiP2pDevice?) {
+    private fun onDnsSdPeerFound(device: WifiP2pDevice?, txtRecordMap: Map<String, String>?) {
         val d = device ?: return
         val addr = d.deviceAddress ?: return
+        val aliasFromTxt = txtRecordMap?.get("alias")?.trim()
+        if (!aliasFromTxt.isNullOrEmpty()) {
+            dnsSdAliasesByMac[addr] = aliasFromTxt
+        }
         val customAlias = dnsSdAliasesByMac[addr]
         val rawName = customAlias ?: d.deviceName?.ifBlank { "Android Cihazı" } ?: "Android Cihazı"
         discoveredP2pPeers[addr] = PeerDevice(

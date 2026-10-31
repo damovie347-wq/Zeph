@@ -38,14 +38,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * ULTRA-SPEED KERNEL ZERO-COPY NIO DMA ENGINE (v4 Final):
- * - Restores NIO SocketChannel + FileChannel.transferTo() (Linux sendfile64 DMA) + 8 MB DirectByteBuffer
- *   which bypasses the Java Heap and JNI bounce buffers completely (78 - 160+ MB/s hardware speed).
- * - Uses 4 MB transferTo slices + per-session AtomicBoolean cancellation + socket shutdownInput/Output
- *   with SO_LINGER(true, 0) so cancelling at %5 takes <15ms, never deadlocks SocketChannel locks,
- *   and allows unlimited subsequent transfers without restarting the app.
- */
 class ZeroCopyTransferEngine(
     private val context: Context,
     private val getLocalAlias: () -> String,
@@ -61,7 +53,7 @@ class ZeroCopyTransferEngine(
         const val SOCKET_BUFFER_BYTES = 16 * 1024 * 1024 // 16 MB Kernel TCP Window
         const val DIRECT_BUFFER_BYTES = 8 * 1024 * 1024 // 8 MB Direct Off-Heap DMA Buffer
         const val ZERO_COPY_SLICE_BYTES = 4L * 1024L * 1024L // 4 MB per kernel sendfile64/transferTo slice
-        private const val PROTOCOL_MAGIC = 0x5A455034 // "ZEP4"
+        private const val PROTOCOL_MAGIC = 0x5A455035 // "ZEP5"
         private const val DECISION_ACCEPTED: Int = 1
         private const val DECISION_REJECTED: Int = 2
     }
@@ -116,8 +108,8 @@ class ZeroCopyTransferEngine(
     fun isCurrentlyPaused(): Boolean = isPaused.get()
 
     /**
-     * Immediately wakes up any blocked NIO channel via TCP shutdown + SO_LINGER(true, 0) RST
-     * without deadlocking on SocketChannelImpl locks, preserving the %5 partial file on disk.
+     * Called ONLY when the user explicitly taps "İptal et" / "Kapat":
+     * Immediately sends TCP RST via SO_LINGER(true, 0) and wakes up any blocked channel in <15ms.
      */
     fun cancelAndPreservePartialFile() {
         currentCancelFlag.set(true)
@@ -130,12 +122,12 @@ class ZeroCopyTransferEngine(
         activeReceiverChannel = null
 
         scope.launch {
-            abortChannelImmediately(sChan)
-            abortChannelImmediately(rChan)
+            abortChannelWithRst(sChan)
+            abortChannelWithRst(rChan)
         }
     }
 
-    private fun abortChannelImmediately(ch: SocketChannel?) {
+    private fun abortChannelWithRst(ch: SocketChannel?) {
         if (ch == null) return
         try {
             val sock = ch.socket()
@@ -155,6 +147,21 @@ class ZeroCopyTransferEngine(
                 sock.close()
             } catch (_: Throwable) {
             }
+        } catch (_: Throwable) {
+        }
+        try {
+            ch.close()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Graceful close used when a transfer completes normally so the kernel flushes every last byte in SO_SNDBUF!
+     */
+    private fun closeChannelGracefully(ch: SocketChannel?) {
+        if (ch == null) return
+        try {
+            ch.socket().shutdownOutput()
         } catch (_: Throwable) {
         }
         try {
@@ -199,7 +206,6 @@ class ZeroCopyTransferEngine(
 
                     while (isActive) {
                         val clientChannel = serverChannel.accept() ?: continue
-                        // Launch on supervised top-level scope so client cancellation never stops serverChannel!
                         scope.launch {
                             handleIncomingClientChannel(clientChannel)
                         }
@@ -217,7 +223,7 @@ class ZeroCopyTransferEngine(
     }
 
     private fun handleIncomingClientChannel(clientChannel: SocketChannel) {
-        abortChannelImmediately(activeReceiverChannel)
+        abortChannelWithRst(activeReceiverChannel)
 
         val sessionCancel = AtomicBoolean(false)
         currentCancelFlag = sessionCancel
@@ -254,7 +260,7 @@ class ZeroCopyTransferEngine(
                 previewLines.add(dis.readUTF())
             }
 
-            // 2. Ask Receiver User for Approval (Full-screen LocalSend UI in MainActivity)
+            // 2. Ask Receiver User for Approval
             var accepted = autoAcceptIncoming
             if (!accepted) {
                 val latch = CountDownLatch(1)
@@ -289,7 +295,7 @@ class ZeroCopyTransferEngine(
                     dos.flush()
                 } catch (_: Throwable) {
                 }
-                clientChannel.close()
+                closeChannelGracefully(clientChannel)
                 return
             }
 
@@ -297,7 +303,6 @@ class ZeroCopyTransferEngine(
             dos.flush()
             onTransferActiveStateChanged(true)
 
-            // 8 MB Direct Off-Heap DMA Buffer (Zero Java Heap copying!)
             val directBuf = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
 
             for (fileIdx in 0 until fileCount) {
@@ -309,6 +314,7 @@ class ZeroCopyTransferEngine(
                 val targetFile: File = StorageHelper.createDirectDownloadTarget(context, fileName)
                 var totalBytesReceived = 0L
                 val startTimeNs = System.nanoTime()
+                val startWallMs = System.currentTimeMillis()
                 var lastUiUpdateMs = 0L
 
                 var raf: RandomAccessFile? = null
@@ -338,6 +344,7 @@ class ZeroCopyTransferEngine(
                                     totalBytes = expectedFileSize,
                                     speedMbps = 0.0,
                                     etaSeconds = 0L,
+                                    elapsedMillis = System.currentTimeMillis() - startWallMs,
                                     status = TransferStatus.PAUSED,
                                     transportLabel = transportLabel,
                                     isSending = false,
@@ -356,8 +363,11 @@ class ZeroCopyTransferEngine(
                         }
 
                         val bytesRead = clientChannel.read(directBuf)
-                        if (bytesRead <= 0) {
+                        if (bytesRead < 0) {
                             break
+                        }
+                        if (bytesRead == 0) {
+                            continue
                         }
 
                         directBuf.flip()
@@ -386,6 +396,7 @@ class ZeroCopyTransferEngine(
                                     totalBytes = expectedFileSize,
                                     speedMbps = speedMbps,
                                     etaSeconds = etaSec,
+                                    elapsedMillis = nowMs - startWallMs,
                                     status = TransferStatus.TRANSFERRING,
                                     transportLabel = transportLabel,
                                     isSending = false,
@@ -396,10 +407,7 @@ class ZeroCopyTransferEngine(
                     }
                 } catch (_: Throwable) {
                 } finally {
-                    // CRITICAL %5 PARTIAL FILE PRESERVATION & SEALING RULE:
-                    // 1) Never delete the partial file!
-                    // 2) Truncate fileChannel to totalBytesReceived so unwritten fallocate zeros are removed.
-                    // 3) Call fileChannel.force(true) (fsync) and trigger MediaScannerConnection.scanFile().
+                    // Seal file on disk: truncate if partial, force(true) fsync, and notify MediaScanner
                     try {
                         if (fileChannel != null && fileChannel.isOpen) {
                             if (totalBytesReceived >= 0L && totalBytesReceived < expectedFileSize) {
@@ -418,23 +426,37 @@ class ZeroCopyTransferEngine(
                     } catch (_: Throwable) {
                     }
 
+                    // CRITICAL EOF ACK HANDSHAKE:
+                    // Send the exact received byte count back to Sender so Sender knows 100% of bytes
+                    // have arrived on disk before Sender closes the socket!
+                    if (!sessionCancel.get() && totalBytesReceived == expectedFileSize) {
+                        try {
+                            dos.writeLong(totalBytesReceived)
+                            dos.flush()
+                        } catch (_: Throwable) {
+                        }
+                    }
+
                     if (totalBytesReceived > 0L) {
                         StorageHelper.notifyMediaScanner(context, targetFile)
                         val isPartial = totalBytesReceived < expectedFileSize
+                        val elapsedMs = (System.currentTimeMillis() - startWallMs).coerceAtLeast(1L)
+                        val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                        val avgSpeedMbps = (totalBytesReceived / (1024.0 * 1024.0)) / elapsedSec
+                        val pct = if (expectedFileSize > 0L) (totalBytesReceived * 100L) / expectedFileSize else 100L
+
                         val record = TransferHistoryRecord(
                             fileName = targetFile.name,
                             filePath = targetFile.absolutePath,
                             bytesWritten = totalBytesReceived,
                             totalExpectedBytes = expectedFileSize,
+                            elapsedMillis = elapsedMs,
+                            avgSpeedMbps = avgSpeedMbps,
                             isPartial = isPartial,
                             timestampMs = System.currentTimeMillis()
                         )
                         historyRecords.add(0, record)
                         onHistoryAdded(record)
-
-                        val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
-                        val avgSpeedMbps = (totalBytesReceived / (1024.0 * 1024.0)) / elapsedSec
-                        val pct = if (expectedFileSize > 0L) (totalBytesReceived * 100L) / expectedFileSize else 100L
 
                         onProgressUpdate(
                             TransferProgress(
@@ -445,6 +467,7 @@ class ZeroCopyTransferEngine(
                                 totalBytes = expectedFileSize,
                                 speedMbps = avgSpeedMbps,
                                 etaSeconds = 0L,
+                                elapsedMillis = elapsedMs,
                                 status = if (isPartial) TransferStatus.PARTIAL_PRESERVED else TransferStatus.COMPLETED,
                                 transportLabel = transportLabel,
                                 isSending = false,
@@ -452,7 +475,7 @@ class ZeroCopyTransferEngine(
                                 message = if (isPartial) {
                                     "Kısmi Dosya Korundu (%$pct • ${StorageHelper.formatFileSize(totalBytesReceived)})"
                                 } else {
-                                    "Tamamlandı (${StorageHelper.formatFileSize(totalBytesReceived)})"
+                                    "Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", avgSpeedMbps)} MB/s"
                                 }
                             )
                         )
@@ -465,14 +488,14 @@ class ZeroCopyTransferEngine(
             if (activeReceiverChannel === clientChannel) {
                 activeReceiverChannel = null
             }
-            abortChannelImmediately(clientChannel)
+            if (sessionCancel.get()) {
+                abortChannelWithRst(clientChannel)
+            } else {
+                closeChannelGracefully(clientChannel)
+            }
         }
     }
 
-    /**
-     * SENDER ENGINE:
-     * Uses Kernel Zero-Copy (FileChannel.transferTo in 4 MB slices) + 8 MB DirectByteBuffer fallback.
-     */
     fun sendItemsToPeers(
         items: List<TransferItem>,
         targetHostIps: List<Pair<String, Int>>,
@@ -480,7 +503,7 @@ class ZeroCopyTransferEngine(
     ) {
         if (items.isEmpty() || targetHostIps.isEmpty()) return
 
-        abortChannelImmediately(activeSenderChannel)
+        abortChannelWithRst(activeSenderChannel)
         activeTransferJob?.cancel()
 
         val sessionCancel = AtomicBoolean(false)
@@ -521,6 +544,7 @@ class ZeroCopyTransferEngine(
                     totalBytes = totalBatchBytes,
                     speedMbps = 0.0,
                     etaSeconds = 0L,
+                    elapsedMillis = 0L,
                     status = TransferStatus.CONNECTING,
                     transportLabel = transportLabel,
                     isSending = true,
@@ -563,6 +587,7 @@ class ZeroCopyTransferEngine(
                     totalBytes = totalBatchBytes,
                     speedMbps = 0.0,
                     etaSeconds = 0L,
+                    elapsedMillis = 0L,
                     status = TransferStatus.WAITING_APPROVAL,
                     transportLabel = transportLabel,
                     isSending = true,
@@ -581,6 +606,7 @@ class ZeroCopyTransferEngine(
                         totalBytes = totalBatchBytes,
                         speedMbps = 0.0,
                         etaSeconds = 0L,
+                        elapsedMillis = 0L,
                         status = TransferStatus.REJECTED,
                         transportLabel = transportLabel,
                         isSending = true,
@@ -626,6 +652,7 @@ class ZeroCopyTransferEngine(
 
                     var bytesSent = 0L
                     val startTimeNs = System.nanoTime()
+                    val startWallMs = System.currentTimeMillis()
                     var lastUiUpdateMs = 0L
 
                     if (item.inlineTextBytes != null) {
@@ -646,6 +673,7 @@ class ZeroCopyTransferEngine(
                                         totalBytes = actualSize,
                                         speedMbps = 0.0,
                                         etaSeconds = 0L,
+                                        elapsedMillis = System.currentTimeMillis() - startWallMs,
                                         status = TransferStatus.PAUSED,
                                         transportLabel = transportLabel,
                                         isSending = true,
@@ -688,7 +716,7 @@ class ZeroCopyTransferEngine(
                             }
 
                             val nowMs = System.currentTimeMillis()
-                            if (nowMs - lastUiUpdateMs >= 140L || bytesSent == actualSize) {
+                            if (nowMs - lastUiUpdateMs >= 140L) {
                                 lastUiUpdateMs = nowMs
                                 val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
                                 val speedMbps = (bytesSent / (1024.0 * 1024.0)) / elapsedSec
@@ -698,15 +726,18 @@ class ZeroCopyTransferEngine(
                                 } else {
                                     0L
                                 }
+                                // Keep progress at 99% while the final SO_SNDBUF bytes are draining to Receiver disk!
+                                val reportedBytes = if (bytesSent >= actualSize) (actualSize - 1L).coerceAtLeast(0L) else bytesSent
                                 onProgressUpdate(
                                     TransferProgress(
                                         fileName = item.name,
                                         fileIndex = fileIdx,
                                         totalFiles = items.size,
-                                        bytesTransferred = bytesSent,
+                                        bytesTransferred = reportedBytes,
                                         totalBytes = actualSize,
                                         speedMbps = speedMbps,
-                                        etaSeconds = etaSec,
+                                        etaSeconds = etaSec.coerceAtLeast(1L),
+                                        elapsedMillis = nowMs - startWallMs,
                                         status = TransferStatus.TRANSFERRING,
                                         transportLabel = transportLabel,
                                         isSending = true
@@ -716,6 +747,22 @@ class ZeroCopyTransferEngine(
                         }
                     }
 
+                    // CRITICAL FIX FOR %94 PARTIAL DROP BUG:
+                    // Wait for Receiver to confirm all 100% of bytes have been flushed to Receiver's UFS storage
+                    // BEFORE closing the socket or finishing!
+                    if (!sessionCancel.get() && bytesSent == actualSize) {
+                        dos.flush()
+                        try {
+                            socketChannel.socket().soTimeout = 30_000
+                            val confirmedByReceiver = dis.readLong()
+                            if (confirmedByReceiver > 0L) {
+                                bytesSent = confirmedByReceiver
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+
+                    val elapsedMs = (System.currentTimeMillis() - startWallMs).coerceAtLeast(1L)
                     val totalElapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
                     val finalSpeedMbps = (bytesSent / (1024.0 * 1024.0)) / totalElapsedSec
                     val isPartial = bytesSent < actualSize
@@ -730,13 +777,14 @@ class ZeroCopyTransferEngine(
                             totalBytes = actualSize,
                             speedMbps = finalSpeedMbps,
                             etaSeconds = 0L,
+                            elapsedMillis = elapsedMs,
                             status = if (isPartial) TransferStatus.PARTIAL_PRESERVED else TransferStatus.COMPLETED,
                             transportLabel = transportLabel,
                             isSending = true,
                             message = if (isPartial) {
                                 "Durduruldu (%$pct gönderildi • Alıcıda kısmi dosya korundu)"
                             } else {
-                                "Gönderim Tamamlandı (${StorageHelper.formatFileSize(bytesSent)})"
+                                "Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", finalSpeedMbps)} MB/s"
                             }
                         )
                     )
@@ -766,6 +814,7 @@ class ZeroCopyTransferEngine(
                         totalBytes = items.firstOrNull()?.sizeBytes ?: 0L,
                         speedMbps = 0.0,
                         etaSeconds = 0L,
+                        elapsedMillis = 0L,
                         status = TransferStatus.PARTIAL_PRESERVED,
                         transportLabel = transportLabel,
                         isSending = true,
@@ -782,6 +831,7 @@ class ZeroCopyTransferEngine(
                         totalBytes = items.firstOrNull()?.sizeBytes ?: 0L,
                         speedMbps = 0.0,
                         etaSeconds = 0L,
+                        elapsedMillis = 0L,
                         status = TransferStatus.ERROR,
                         transportLabel = transportLabel,
                         isSending = true,
@@ -793,8 +843,22 @@ class ZeroCopyTransferEngine(
             if (activeSenderChannel === socketChannel) {
                 activeSenderChannel = null
             }
-            abortChannelImmediately(socketChannel)
+            if (sessionCancel.get()) {
+                abortChannelWithRst(socketChannel)
+            } else {
+                closeChannelGracefully(socketChannel)
+            }
         }
+    }
+
+    private fun formatDurationSec(elapsedMs: Long): String {
+        val totalSec = elapsedMs / 1000.0
+        if (totalSec < 60.0) {
+            return String.format("%.1f sn", totalSec)
+        }
+        val mins = (totalSec / 60).toInt()
+        val secs = (totalSec % 60).toInt()
+        return "${mins} dk ${secs} sn"
     }
 
     private fun startHttpBrowserShareServer() {

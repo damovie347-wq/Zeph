@@ -4,6 +4,16 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import java.io.File
 
+enum class AppThemeMode(val prefValue: Int, val label: String) {
+    AMOLED_BLACK(0, "AMOLED Siyah"),
+    DARK_SLATE(1, "Karanlık Tema"),
+    LIGHT_CLEAN(2, "Açık Tema");
+
+    companion object {
+        fun fromPref(value: Int): AppThemeMode = entries.firstOrNull { it.prefValue == value } ?: DARK_SLATE
+    }
+}
+
 enum class DeviceCategory {
     PHONE,
     LAPTOP,
@@ -86,6 +96,7 @@ data class TransferProgress(
     val totalBytes: Long,
     val speedMbps: Double,
     val etaSeconds: Long,
+    val elapsedMillis: Long = 0L,
     val status: TransferStatus,
     val transportLabel: String,
     val isSending: Boolean = false,
@@ -95,13 +106,6 @@ data class TransferProgress(
     val progressPercent: Int
         get() = if (totalBytes > 0L) {
             ((bytesTransferred * 100L) / totalBytes).toInt().coerceIn(0, 100)
-        } else {
-            0
-        }
-
-    val progressPermille: Int
-        get() = if (totalBytes > 0L) {
-            ((bytesTransferred * 1000L) / totalBytes).toInt().coerceIn(0, 1000)
         } else {
             0
         }
@@ -122,6 +126,8 @@ data class TransferHistoryRecord(
     val filePath: String,
     val bytesWritten: Long,
     val totalExpectedBytes: Long,
+    val elapsedMillis: Long = 0L,
+    val avgSpeedMbps: Double = 0.0,
     val isPartial: Boolean,
     val timestampMs: Long
 )

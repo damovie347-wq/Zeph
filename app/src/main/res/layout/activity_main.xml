@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootFrameContainer"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg_main_dark">
@@ -611,12 +612,79 @@
                     android:orientation="vertical">
 
                     <TextView
+                        android:id="@+id/tvSettingsMainHeader"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Ayarlar"
                         android:textColor="@color/text_primary_white"
                         android:textSize="22sp"
                         android:textStyle="bold" />
+
+                    <!-- Theme Selection Card: AMOLED Siyah / Karanlık Tema / Açık Tema -->
+                    <LinearLayout
+                        android:id="@+id/cardThemeSettings"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Görünüm ve Tema"
+                            android:textColor="@color/accent_cyan_bright"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:orientation="horizontal"
+                            android:weightSum="3">
+
+                            <TextView
+                                android:id="@+id/btnThemeAmoled"
+                                android:layout_width="0dp"
+                                android:layout_height="40dp"
+                                android:layout_marginEnd="5dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:text="AMOLED Siyah"
+                                android:textColor="@color/text_primary_white"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/btnThemeDark"
+                                android:layout_width="0dp"
+                                android:layout_height="40dp"
+                                android:layout_marginHorizontal="3dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_button_cyan_pill"
+                                android:gravity="center"
+                                android:text="Karanlık Tema"
+                                android:textColor="@color/accent_cyan_dark_text"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/btnThemeLight"
+                                android:layout_width="0dp"
+                                android:layout_height="40dp"
+                                android:layout_marginStart="5dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:text="Açık Tema"
+                                android:textColor="@color/text_primary_white"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
 
                     <!-- Device Alias Setting -->
                     <LinearLayout
@@ -1456,6 +1524,15 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
                     android:text="Hız: 0.0 MB/s"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvTransferElapsedTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Geçen Süre: 0.0 sn"
                     android:textColor="@color/text_secondary_muted"
                     android:textSize="13sp" />
 

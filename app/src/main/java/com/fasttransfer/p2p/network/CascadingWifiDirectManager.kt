@@ -14,6 +14,8 @@ import android.net.wifi.p2p.WifiP2pDeviceList
 import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -21,10 +23,20 @@ import com.fasttransfer.p2p.model.ConnectionTransport
 import com.fasttransfer.p2p.model.DeviceCategory
 import com.fasttransfer.p2p.model.PeerDevice
 import com.fasttransfer.p2p.util.CompatibilityHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.BufferedReader
+import java.io.FileReader
 
 @SuppressLint("MissingPermission")
 class CascadingWifiDirectManager(
     private val context: Context,
+    private val getLocalAlias: () -> String,
     private val onPeersUpdated: (List<PeerDevice>) -> Unit,
     private val onDirectConnectionReady: (
         groupOwnerIp: String,
@@ -39,11 +51,16 @@ class CascadingWifiDirectManager(
         context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     private var channel: WifiP2pManager.Channel? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var discoveryHeartbeatJob: Job? = null
+
     private var isReceiverRegistered = false
     var preferHighBand: Boolean = true
-    private var activeBandLabel: String = "Otomatik Köprü (6GHz/5GHz)"
+    private var isConnectingOrConnected = false
+    private var activeBandLabel: String = "Doğrudan Köprü (6GHz / 5GHz)"
 
     private val discoveredP2pPeers = mutableMapOf<String, PeerDevice>()
+    private val dnsSdAliasesByMac = mutableMapOf<String, String>()
 
     private val p2pReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -63,6 +80,7 @@ class CascadingWifiDirectManager(
                         WifiP2pInfo::class.java
                     )
                     if (p2pInfo != null && p2pInfo.groupFormed && p2pInfo.groupOwnerAddress != null) {
+                        isConnectingOrConnected = true
                         val ownerIp = p2pInfo.groupOwnerAddress.hostAddress ?: "192.168.49.1"
                         p2pManager?.requestGroupInfo(ch) { group: WifiP2pGroup? ->
                             val freqMhz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && group != null) {
@@ -88,12 +106,15 @@ class CascadingWifiDirectManager(
                         )
                         @Suppress("DEPRECATION")
                         if (networkInfo?.isConnected == true) {
+                            isConnectingOrConnected = true
                             p2pManager?.requestConnectionInfo(ch) { info ->
                                 if (info != null && info.groupFormed && info.groupOwnerAddress != null) {
                                     val ownerIp = info.groupOwnerAddress.hostAddress ?: "192.168.49.1"
                                     onDirectConnectionReady(ownerIp, info.isGroupOwner, activeBandLabel)
                                 }
                             }
+                        } else {
+                            isConnectingOrConnected = false
                         }
                     }
                 }
@@ -105,10 +126,6 @@ class CascadingWifiDirectManager(
         if (p2pManager == null) return
         if (channel == null) {
             channel = p2pManager.initialize(context, Looper.getMainLooper(), null)
-        }
-        // Automatically clean up any lingering/ghost P2P hotspot groups from previous sessions!
-        cleanupStaleGroups {
-            discoverPeers()
         }
         if (!isReceiverRegistered) {
             val filter = IntentFilter().apply {
@@ -124,12 +141,74 @@ class CascadingWifiDirectManager(
             }
             isReceiverRegistered = true
         }
+
+        cleanupStaleGroups {
+            registerLocalP2pService()
+            discoverPeers()
+            startDiscoveryHeartbeat()
+        }
     }
 
-    /**
-     * Removes any persistent DIRECT-... group from Android's system_server so no unwanted hotspot
-     * ever stays open in Wi-Fi settings.
-     */
+    private fun registerLocalP2pService() {
+        val mgr = p2pManager ?: return
+        val ch = channel ?: return
+        try {
+            val record = mapOf(
+                "alias" to getLocalAlias(),
+                "model" to (Build.MANUFACTURER ?: "Android")
+            )
+            val serviceInfo = WifiP2pDnsSdServiceInfo.newInstance(
+                "ZephP2P",
+                "_fasttransfer._tcp",
+                record
+            )
+            mgr.clearLocalServices(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    mgr.addLocalService(ch, serviceInfo, null)
+                }
+                override fun onFailure(reason: Int) {
+                    mgr.addLocalService(ch, serviceInfo, null)
+                }
+            })
+
+            mgr.setDnsSdResponseListeners(
+                ch,
+                { _, _, srcDevice ->
+                    handleSingleDiscoveredDevice(srcDevice)
+                },
+                { _, txtRecordMap, srcDevice ->
+                    val alias = txtRecordMap["alias"]
+                    if (!alias.isNullOrBlank() && !srcDevice.deviceAddress.isNullOrBlank()) {
+                        dnsSdAliasesByMac[srcDevice.deviceAddress] = alias
+                    }
+                    handleSingleDiscoveredDevice(srcDevice)
+                }
+            )
+            val serviceRequest = WifiP2pDnsSdServiceRequest.newInstance()
+            mgr.clearServiceRequests(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    mgr.addServiceRequest(ch, serviceRequest, null)
+                }
+                override fun onFailure(reason: Int) {
+                    mgr.addServiceRequest(ch, serviceRequest, null)
+                }
+            })
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun startDiscoveryHeartbeat() {
+        discoveryHeartbeatJob?.cancel()
+        discoveryHeartbeatJob = scope.launch {
+            while (isActive) {
+                delay(14_000L)
+                if (!isConnectingOrConnected) {
+                    discoverPeers()
+                }
+            }
+        }
+    }
+
     fun cleanupStaleGroups(onComplete: (() -> Unit)? = null) {
         val mgr = p2pManager
         val ch = channel
@@ -137,6 +216,7 @@ class CascadingWifiDirectManager(
             onComplete?.invoke()
             return
         }
+        isConnectingOrConnected = false
         try {
             mgr.cancelConnect(ch, null)
         } catch (_: Throwable) {
@@ -166,15 +246,16 @@ class CascadingWifiDirectManager(
                 override fun onFailure(reason: Int) {
                 }
             })
+            mgr.discoverServices(ch, null)
         } catch (_: Throwable) {
         }
     }
 
     /**
-     * Automatic Cascading Band Negotiation when X1 taps X2:
-     * 1) Tier 1: GROUP_OWNER_BAND_AUTO (Automatically picks 6 GHz on Wi-Fi 6E/7 or 5 GHz on Wi-Fi 5/6)
-     * 2) Tier 2: GROUP_OWNER_BAND_5GHZ explicit 5 GHz
-     * 3) Tier 3: Immediate 0ms fallback to 2.4 GHz / Legacy WifiP2pConfig
+     * Automatic Cascading Band Negotiation when Sender taps Receiver:
+     * 1) Checks if already connected to a P2P group; if so, triggers immediate transfer.
+     * 2) On API 29+, tries GROUP_OWNER_BAND_AUTO (6 GHz / 5 GHz highest shared band) and GROUP_OWNER_BAND_5GHZ.
+     * 3) Falls back in 0ms to standard WifiP2pConfig with groupOwnerIntent = 0 (so Receiver becomes 192.168.49.1!).
      */
     fun connectWithCascadingBandFallback(macAddress: String, onConnectedOrFailed: (Boolean, String) -> Unit) {
         val mgr = p2pManager
@@ -184,49 +265,67 @@ class CascadingWifiDirectManager(
             return
         }
 
-        try {
-            mgr.stopPeerDiscovery(ch, null)
-        } catch (_: Throwable) {
-        }
+        isConnectingOrConnected = true
 
-        mainHandler.postDelayed({
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && preferHighBand) {
-                try {
-                    // GROUP_OWNER_BAND_AUTO lets the Wi-Fi HAL pick the highest shared band (6 GHz -> 5 GHz -> 2.4 GHz)
-                    val autoHighBandConfig = WifiP2pConfig.Builder()
-                        .setDeviceAddress(android.net.MacAddress.fromString(macAddress))
-                        .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
-                        .build()
-
-                    activeBandLabel = "Otomatik Köprü (6GHz / 5GHz)"
-                    mgr.connect(ch, autoHighBandConfig, object : WifiP2pManager.ActionListener {
-                        override fun onSuccess() {
-                            onConnectedOrFailed(true, activeBandLabel)
-                        }
-                        override fun onFailure(reason: Int) {
-                            connectLegacy24GhzOrAutoFallback(mgr, ch, macAddress, onConnectedOrFailed)
-                        }
-                    })
-                    return@postDelayed
-                } catch (_: Throwable) {
-                }
+        // Check if already connected to a P2P group!
+        mgr.requestConnectionInfo(ch) { existingInfo ->
+            if (existingInfo != null && existingInfo.groupFormed && existingInfo.groupOwnerAddress != null) {
+                val ownerIp = existingInfo.groupOwnerAddress.hostAddress ?: "192.168.49.1"
+                onConnectedOrFailed(true, activeBandLabel)
+                onDirectConnectionReady(ownerIp, existingInfo.isGroupOwner, activeBandLabel)
+                return@requestConnectionInfo
             }
 
-            connectLegacy24GhzOrAutoFallback(mgr, ch, macAddress, onConnectedOrFailed)
-        }, 120L)
+            try {
+                mgr.stopPeerDiscovery(ch, null)
+            } catch (_: Throwable) {
+            }
+
+            mainHandler.postDelayed({
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && preferHighBand) {
+                    try {
+                        val supports5G = wifiManager?.is5GHzBandSupported == true
+                        val bandConstant = if (supports5G) {
+                            WifiP2pConfig.GROUP_OWNER_BAND_5GHZ
+                        } else {
+                            WifiP2pConfig.GROUP_OWNER_BAND_AUTO
+                        }
+                        val highBandConfig = WifiP2pConfig.Builder()
+                            .setDeviceAddress(android.net.MacAddress.fromString(macAddress))
+                            .setGroupOperatingBand(bandConstant)
+                            .build()
+
+                        activeBandLabel = if (supports5G) "5 GHz Doğrudan Köprü" else "Otomatik Doğrudan Köprü"
+                        mgr.connect(ch, highBandConfig, object : WifiP2pManager.ActionListener {
+                            override fun onSuccess() {
+                                onConnectedOrFailed(true, activeBandLabel)
+                            }
+                            override fun onFailure(reason: Int) {
+                                connectStandardP2pFallback(mgr, ch, macAddress, onConnectedOrFailed)
+                            }
+                        })
+                        return@postDelayed
+                    } catch (_: Throwable) {
+                    }
+                }
+
+                connectStandardP2pFallback(mgr, ch, macAddress, onConnectedOrFailed)
+            }, 150L)
+        }
     }
 
-    private fun connectLegacy24GhzOrAutoFallback(
+    private fun connectStandardP2pFallback(
         mgr: WifiP2pManager,
         ch: WifiP2pManager.Channel,
         macAddress: String,
         onConnectedOrFailed: (Boolean, String) -> Unit
     ) {
-        activeBandLabel = "Doğrudan Köprü"
+        activeBandLabel = "Doğrudan Köprü (P2P)"
         val fallbackConfig = WifiP2pConfig().apply {
             deviceAddress = macAddress
             wps.setup = WpsInfo.PBC
-            groupOwnerIntent = 14
+            // groupOwnerIntent = 0 makes the Receiver the Group Owner (192.168.49.1) so Sender knows the IP immediately!
+            groupOwnerIntent = 0
         }
         try {
             mgr.connect(ch, fallbackConfig, object : WifiP2pManager.ActionListener {
@@ -234,12 +333,55 @@ class CascadingWifiDirectManager(
                     onConnectedOrFailed(true, activeBandLabel)
                 }
                 override fun onFailure(reason: Int) {
-                    onConnectedOrFailed(false, "Karşı cihazda Wi-Fi Direct onayı bekleniyor (Kod: $reason)")
+                    isConnectingOrConnected = false
+                    onConnectedOrFailed(false, "Karşı cihazda Wi-Fi Direct daveti bekleniyor (Kod: $reason)")
                 }
             })
         } catch (t: Throwable) {
+            isConnectingOrConnected = false
             onConnectedOrFailed(false, t.message ?: "Bilinmeyen hata")
         }
+    }
+
+    /**
+     * Reads /proc/net/arp to find any connected P2P client IP on 192.168.49.x when this device is Group Owner.
+     */
+    fun findConnectedP2pClientIpFromArp(): String? {
+        try {
+            BufferedReader(FileReader("/proc/net/arp")).use { br ->
+                var line: String?
+                while (br.readLine().also { line = it } != null) {
+                    val parts = line!!.trim().split(Regex("\s+"))
+                    if (parts.size >= 4) {
+                        val ip = parts[0]
+                        val flags = parts[2]
+                        if (ip.startsWith("192.168.49.") && ip != "192.168.49.1" && flags != "0x0") {
+                            return ip
+                        }
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    private fun handleSingleDiscoveredDevice(device: WifiP2pDevice?) {
+        val d = device ?: return
+        val addr = d.deviceAddress ?: return
+        val customAlias = dnsSdAliasesByMac[addr]
+        val rawName = customAlias ?: d.deviceName?.ifBlank { "Android Cihazı" } ?: "Android Cihazı"
+        discoveredP2pPeers[addr] = PeerDevice(
+            id = "p2p_$addr",
+            alias = rawName,
+            deviceModel = "Wi-Fi Direct",
+            ipAddress = if (d.status == WifiP2pDevice.CONNECTED && d.isGroupOwner) "192.168.49.1" else null,
+            macAddress = addr,
+            port = 53317,
+            category = DeviceCategory.PHONE,
+            transport = ConnectionTransport.WIFI_DIRECT_AUTO
+        )
+        onPeersUpdated(discoveredP2pPeers.values.toList())
     }
 
     private fun handlePeerList(peerList: WifiP2pDeviceList?) {
@@ -248,12 +390,13 @@ class CascadingWifiDirectManager(
 
         for (device: WifiP2pDevice in list) {
             val addr = device.deviceAddress ?: continue
-            val name = device.deviceName?.ifBlank { "Android Cihazı" } ?: "Android Cihazı"
+            val customAlias = dnsSdAliasesByMac[addr]
+            val name = customAlias ?: device.deviceName?.ifBlank { "Android Cihazı" } ?: "Android Cihazı"
             discoveredP2pPeers[addr] = PeerDevice(
                 id = "p2p_$addr",
                 alias = name,
                 deviceModel = "Wi-Fi Direct",
-                ipAddress = null,
+                ipAddress = if (device.status == WifiP2pDevice.CONNECTED && device.isGroupOwner) "192.168.49.1" else null,
                 macAddress = addr,
                 port = 53317,
                 category = DeviceCategory.PHONE,
@@ -279,6 +422,7 @@ class CascadingWifiDirectManager(
     }
 
     fun stop() {
+        discoveryHeartbeatJob?.cancel()
         cleanupStaleGroups()
         if (isReceiverRegistered) {
             try {

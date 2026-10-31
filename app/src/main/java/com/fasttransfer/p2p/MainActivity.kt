@@ -4,6 +4,7 @@ import android.app.Dialog
 import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
@@ -37,6 +38,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.fasttransfer.p2p.databinding.ActivityMainBinding
 import com.fasttransfer.p2p.model.ApkAppItem
+import com.fasttransfer.p2p.model.AppThemeMode
 import com.fasttransfer.p2p.model.IncomingTransferRequest
 import com.fasttransfer.p2p.model.PeerDevice
 import com.fasttransfer.p2p.model.SendMode
@@ -78,9 +80,12 @@ class MainActivity : AppCompatActivity() {
     private val favoriteIps = mutableSetOf<String>()
 
     private var currentSendMode: SendMode = SendMode.SINGLE_RECIPIENT
+    private var currentThemeMode: AppThemeMode = AppThemeMode.DARK_SLATE
+    private var currentTabIndex: Int = 0
     private var deviceAlias: String = "Kind Carrot"
     private var lastSavedOrPartialFilePath: String? = null
     private var pendingPeerForDirectTransfer: PeerDevice? = null
+    private var p2pWaitClientJob: Job? = null
     private var currentIncomingRequest: IncomingTransferRequest? = null
     private var isAdvancedStatsExpanded: Boolean = false
     private var isTransferCurrentlyFinishedOrStopped: Boolean = false
@@ -174,6 +179,7 @@ class MainActivity : AppCompatActivity() {
         setupIncomingAndSessionOverlays()
         setupSettingsTabActions()
         setupBackNavigationHandler()
+        applyThemeMode(currentThemeMode)
         setupEngines()
 
         requestNecessaryPermissionsIfNeeded()
@@ -186,10 +192,6 @@ class MainActivity : AppCompatActivity() {
         handleIncomingShareIntent(intent)
     }
 
-    /**
-     * Deduplicates files by normalized name + exact byte size (and URI) so picking the same video
-     * in the app and then sharing it from File Manager / Gallery NEVER adds the same file twice!
-     */
     private fun addUniqueTransferItems(incoming: List<TransferItem>) {
         var addedCount = 0
         var skippedDuplicates = 0
@@ -217,6 +219,9 @@ class MainActivity : AppCompatActivity() {
         val savedFavs = prefs.getStringSet("favorite_ips", emptySet()) ?: emptySet()
         val autoAccept = prefs.getBoolean("auto_accept_incoming", false)
         val keepNotif = prefs.getBoolean("keep_service_notif", false)
+        val themePref = prefs.getInt("app_theme_mode", AppThemeMode.DARK_SLATE.prefValue)
+        currentThemeMode = AppThemeMode.fromPref(themePref)
+
         favoriteIps.clear()
         for (ip in savedFavs) {
             if (ip != "192.168.49.1") {
@@ -238,7 +243,79 @@ class MainActivity : AppCompatActivity() {
             .putStringSet("favorite_ips", favoriteIps)
             .putBoolean("auto_accept_incoming", binding.switchAutoAccept.isChecked)
             .putBoolean("keep_service_notif", binding.switchKeepServiceNotification.isChecked)
+            .putInt("app_theme_mode", currentThemeMode.prefValue)
             .apply()
+    }
+
+    /**
+     * Dynamically applies AMOLED Black, Dark Slate, or Clean Light theme across all screens and bars.
+     */
+    private fun applyThemeMode(mode: AppThemeMode) {
+        currentThemeMode = mode
+        savePreferences()
+
+        val bgMain: Int
+        val bgNav: Int
+        val textPrimary: Int
+        val textSecondary: Int
+        val radarColor: Int
+
+        when (mode) {
+            AppThemeMode.AMOLED_BLACK -> {
+                bgMain = Color.parseColor("#000000")
+                bgNav = Color.parseColor("#080C0E")
+                textPrimary = Color.parseColor("#FFFFFF")
+                textSecondary = Color.parseColor("#90A4AE")
+                radarColor = Color.parseColor("#6CD4FF")
+            }
+            AppThemeMode.DARK_SLATE -> {
+                bgMain = Color.parseColor("#101818")
+                bgNav = Color.parseColor("#141E1E")
+                textPrimary = Color.parseColor("#ECF4F6")
+                textSecondary = Color.parseColor("#93A8AC")
+                radarColor = Color.parseColor("#6CD4FF")
+            }
+            AppThemeMode.LIGHT_CLEAN -> {
+                bgMain = Color.parseColor("#F2F7F9")
+                bgNav = Color.parseColor("#E1ECEF")
+                textPrimary = Color.parseColor("#0D1F26")
+                textSecondary = Color.parseColor("#4A6572")
+                radarColor = Color.parseColor("#0088B8")
+            }
+        }
+
+        binding.rootFrameContainer.setBackgroundColor(bgMain)
+        binding.bottomNavBar.setBackgroundColor(bgNav)
+        binding.radarPulseReceive.setThemeColor(radarColor)
+        binding.tvDeviceAliasReceive.setTextColor(textPrimary)
+        binding.tvSettingsMainHeader.setTextColor(textPrimary)
+        binding.tvDynamicTip.setTextColor(textSecondary)
+        binding.btnReceiveHistory.imageTintList = ColorStateList.valueOf(textPrimary)
+        binding.btnReceiveInfo.imageTintList = ColorStateList.valueOf(textPrimary)
+
+        window.statusBarColor = bgMain
+        window.navigationBarColor = bgNav
+
+        // Highlight active theme button in Settings
+        val darkText = Color.parseColor("#002A3A")
+        val whiteText = Color.parseColor("#ECF4F6")
+
+        binding.btnThemeAmoled.setBackgroundResource(
+            if (mode == AppThemeMode.AMOLED_BLACK) R.drawable.bg_button_cyan_pill else R.drawable.bg_button_outline_pill
+        )
+        binding.btnThemeAmoled.setTextColor(if (mode == AppThemeMode.AMOLED_BLACK) darkText else whiteText)
+
+        binding.btnThemeDark.setBackgroundResource(
+            if (mode == AppThemeMode.DARK_SLATE) R.drawable.bg_button_cyan_pill else R.drawable.bg_button_outline_pill
+        )
+        binding.btnThemeDark.setTextColor(if (mode == AppThemeMode.DARK_SLATE) darkText else whiteText)
+
+        binding.btnThemeLight.setBackgroundResource(
+            if (mode == AppThemeMode.LIGHT_CLEAN) R.drawable.bg_button_cyan_pill else R.drawable.bg_button_outline_pill
+        )
+        binding.btnThemeLight.setTextColor(if (mode == AppThemeMode.LIGHT_CLEAN) darkText else whiteText)
+
+        switchTab(currentTabIndex)
     }
 
     private fun setHardwareServiceRunning(active: Boolean) {
@@ -268,10 +345,10 @@ class MainActivity : AppCompatActivity() {
         binding.radarPulseReceive.setThemeColor(Color.parseColor("#6CD4FF"))
 
         lifecycleScope.launch {
-            delay(850L)
+            delay(750L)
             binding.splashOverlay.animate()
                 .alpha(0f)
-                .setDuration(260L)
+                .setDuration(240L)
                 .withEndAction {
                     binding.splashOverlay.visibility = View.GONE
                 }
@@ -304,24 +381,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun switchTab(index: Int) {
+        currentTabIndex = index
         binding.pageReceive.visibility = if (index == 0) View.VISIBLE else View.GONE
         binding.pageSend.visibility = if (index == 1) View.VISIBLE else View.GONE
         binding.pageSettings.visibility = if (index == 2) View.VISIBLE else View.GONE
 
-        val white = ContextCompat.getColor(this, R.color.text_primary_white)
-        val muted = ContextCompat.getColor(this, R.color.text_secondary_muted)
+        val activeColor = if (currentThemeMode == AppThemeMode.LIGHT_CLEAN) {
+            Color.parseColor("#FFFFFF")
+        } else {
+            ContextCompat.getColor(this, R.color.text_primary_white)
+        }
+        val activeLabelColor = if (currentThemeMode == AppThemeMode.LIGHT_CLEAN) {
+            Color.parseColor("#0D1F26")
+        } else {
+            ContextCompat.getColor(this, R.color.text_primary_white)
+        }
+        val muted = if (currentThemeMode == AppThemeMode.LIGHT_CLEAN) {
+            Color.parseColor("#5C7682")
+        } else {
+            ContextCompat.getColor(this, R.color.text_secondary_muted)
+        }
 
         binding.pillReceive.setBackgroundResource(if (index == 0) R.drawable.bg_nav_pill else 0)
-        binding.ivNavReceive.setColorFilter(if (index == 0) white else muted)
-        binding.tvNavReceive.setTextColor(if (index == 0) white else muted)
+        binding.ivNavReceive.setColorFilter(if (index == 0) activeColor else muted)
+        binding.tvNavReceive.setTextColor(if (index == 0) activeLabelColor else muted)
 
         binding.pillSend.setBackgroundResource(if (index == 1) R.drawable.bg_nav_pill else 0)
-        binding.ivNavSend.setColorFilter(if (index == 1) white else muted)
-        binding.tvNavSend.setTextColor(if (index == 1) white else muted)
+        binding.ivNavSend.setColorFilter(if (index == 1) activeColor else muted)
+        binding.tvNavSend.setTextColor(if (index == 1) activeLabelColor else muted)
 
         binding.pillSettings.setBackgroundResource(if (index == 2) R.drawable.bg_nav_pill else 0)
-        binding.ivNavSettings.setColorFilter(if (index == 2) white else muted)
-        binding.tvNavSettings.setTextColor(if (index == 2) white else muted)
+        binding.ivNavSettings.setColorFilter(if (index == 2) activeColor else muted)
+        binding.tvNavSettings.setTextColor(if (index == 2) activeLabelColor else muted)
     }
 
     private fun setupReceiveTabActions() {
@@ -336,12 +427,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Sets up the exact Full-Screen Incoming Request, Options, and Transfer Session overlays
-     * with smooth TransitionManager animations matching Video 2 (00:09 - 00:22).
-     */
     private fun setupIncomingAndSessionOverlays() {
-        // Starts collapsed just like Video 2 at 00:14, expands smoothly when user taps "Gelişmiş"
         isAdvancedStatsExpanded = false
         binding.layoutAdvancedStats.visibility = View.GONE
         binding.tvToggleAdvancedLabel.text = "Gelişmiş"
@@ -398,7 +484,6 @@ class MainActivity : AppCompatActivity() {
             req?.onDecision?.invoke(true)
         }
 
-        // Smooth animated expand/collapse for "ⓘ Gelişmiş" / "ⓘ Gizle" (Video 2 00:15 - 00:22)
         binding.btnToggleAdvancedStats.setOnClickListener {
             val transition = AutoTransition().apply {
                 duration = 220L
@@ -419,6 +504,7 @@ class MainActivity : AppCompatActivity() {
                 hideOverlaySmoothly(binding.overlayTransferSession)
                 return@setOnClickListener
             }
+            p2pWaitClientJob?.cancel()
             transferEngine.cancelAndPreservePartialFile()
             isTransferCurrentlyFinishedOrStopped = true
             binding.btnPauseResumeTransfer.visibility = View.GONE
@@ -435,6 +521,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnDismissTransferCard.setOnClickListener {
+            p2pWaitClientJob?.cancel()
             transferEngine.cancelAndPreservePartialFile()
             isTransferCurrentlyFinishedOrStopped = true
             hideOverlaySmoothly(binding.overlayTransferSession)
@@ -462,6 +549,7 @@ class MainActivity : AppCompatActivity() {
         binding.progressSessionItem.progress = 0
         binding.progressBarTransfer.progress = 0
         binding.tvTransferTitle.text = "Toplam ilerleme (--:--)"
+        binding.tvTransferElapsedTime.text = "Geçen Süre: 0.0 sn"
         binding.btnPauseResumeTransfer.text = "Duraklat"
         binding.btnPauseResumeTransfer.visibility = View.VISIBLE
         binding.tvCancelOrDoneLabel.text = "İptal et"
@@ -578,6 +666,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSettingsTabActions() {
+        binding.btnThemeAmoled.setOnClickListener {
+            applyThemeMode(AppThemeMode.AMOLED_BLACK)
+        }
+        binding.btnThemeDark.setOnClickListener {
+            applyThemeMode(AppThemeMode.DARK_SLATE)
+        }
+        binding.btnThemeLight.setOnClickListener {
+            applyThemeMode(AppThemeMode.LIGHT_CLEAN)
+        }
+
         binding.btnSaveAlias.setOnClickListener {
             val newAlias = binding.etSettingsDeviceAlias.text.toString().trim()
             if (newAlias.isNotEmpty()) {
@@ -681,6 +779,7 @@ class MainActivity : AppCompatActivity() {
 
         wifiDirectManager = CascadingWifiDirectManager(
             context = this,
+            getLocalAlias = { deviceAlias },
             onPeersUpdated = { peers ->
                 runOnUiThread {
                     p2pPeers.clear()
@@ -690,29 +789,52 @@ class MainActivity : AppCompatActivity() {
             },
             onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
-                    if (!isGroupOwner) {
-                        lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
-                    } else {
-                        lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                    // Burst UDP announcements over the newly formed 192.168.49.x P2P interface!
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        repeat(5) {
+                            if (!isGroupOwner) {
+                                lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
+                            }
+                            lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                            delay(220L)
+                        }
                     }
 
                     val pending = pendingPeerForDirectTransfer
                     if (pending != null && selectedTransferItems.isNotEmpty()) {
                         pendingPeerForDirectTransfer = null
                         if (!isGroupOwner) {
+                            // We are P2P Client -> Receiver is Group Owner at 192.168.49.1! Connect immediately!
                             transferEngine.sendItemsToPeers(
                                 items = selectedTransferItems.toList(),
                                 targetHostIps = listOf(groupOwnerIp to 53317),
                                 transportLabel = bandLabel
                             )
                         } else {
-                            val p2pClient = lanPeers.firstOrNull { it.ipAddress?.startsWith("192.168.49.") == true }
-                            if (p2pClient?.ipAddress != null) {
-                                transferEngine.sendItemsToPeers(
-                                    items = selectedTransferItems.toList(),
-                                    targetHostIps = listOf(p2pClient.ipAddress to 53317),
-                                    transportLabel = bandLabel
-                                )
+                            // We are Group Owner (192.168.49.1) -> Poll ARP & UDP for up to 10s for Receiver Client IP (192.168.49.x)!
+                            p2pWaitClientJob?.cancel()
+                            p2pWaitClientJob = lifecycleScope.launch(Dispatchers.IO) {
+                                var targetClientIp: String? = null
+                                for (attempt in 0 until 40) {
+                                    val fromLan = lanPeers.firstOrNull { it.ipAddress?.startsWith("192.168.49.") == true && it.ipAddress != "192.168.49.1" }?.ipAddress
+                                    val fromArp = wifiDirectManager.findConnectedP2pClientIpFromArp()
+                                    targetClientIp = fromLan ?: fromArp
+                                    if (!targetClientIp.isNullOrBlank()) break
+                                    lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                                    delay(250L)
+                                }
+                                withContext(Dispatchers.Main) {
+                                    if (!targetClientIp.isNullOrBlank()) {
+                                        transferEngine.sendItemsToPeers(
+                                            items = selectedTransferItems.toList(),
+                                            targetHostIps = listOf(targetClientIp to 53317),
+                                            transportLabel = bandLabel
+                                        )
+                                    } else {
+                                        binding.tvTransferTitle.text = "Köprü Hazır (192.168.49.1)"
+                                        binding.tvTransferEta.text = "Bağlantı kuruldu, şimdi cihaza tekrar dokunarak gönderimi başlatın."
+                                    }
+                                }
                             }
                         }
                     }
@@ -729,9 +851,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Shows the exact Full-Screen Incoming Request Overlay from Video 2 (00:09 - 00:13).
-     */
     private fun showIncomingConsentOverlay(req: IncomingTransferRequest) {
         currentIncomingRequest = req
         binding.tvOverlaySenderAlias.text = req.senderAlias
@@ -783,15 +902,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Shows both Direct P2P Hardware Bridge peers and Local Wi-Fi IP peers (sorted with Direct P2P first!)
+     * so users can connect even with zero router/hotspot OR bypass slow home routers.
+     */
     private fun mergeAndRenderDiscoveredPeers() {
         val combined = mutableListOf<PeerDevice>()
         combined.addAll(lanPeers)
         for (p2p in p2pPeers) {
-            // Only add Wi-Fi Direct peer if not already connected via IP
-            if (combined.none { it.alias.equals(p2p.alias, ignoreCase = true) }) {
+            if (combined.none { it.id == p2p.id }) {
                 combined.add(p2p)
             }
         }
+        combined.sortWith(compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias })
 
         if (combined.isEmpty()) {
             binding.cardScanningPlaceholder.visibility = View.VISIBLE
@@ -849,7 +972,7 @@ class MainActivity : AppCompatActivity() {
         if (!peer.macAddress.isNullOrBlank()) {
             pendingPeerForDirectTransfer = peer
             binding.tvTransferTitle.text = "Doğrudan Köprü Kuruluyor..."
-            binding.tvTransferEta.text = "Karşı cihazda çıkan bağlantı onayını kabul edin..."
+            binding.tvTransferEta.text = "Karşı cihazda çıkan Wi-Fi Direct davetini onaylayın..."
             wifiDirectManager.connectWithCascadingBandFallback(peer.macAddress) { success, msg ->
                 runOnUiThread {
                     if (!success) {
@@ -877,10 +1000,12 @@ class MainActivity : AppCompatActivity() {
         val speedFormat = DecimalFormat("0.0")
         val transferredStr = StorageHelper.formatFileSize(progress.bytesTransferred)
         val totalStr = StorageHelper.formatFileSize(progress.totalBytes)
+        val elapsedSecStr = formatElapsedSeconds(progress.elapsedMillis)
 
         binding.tvAdvancedFilesCount.text = "Dosyalar: ${progress.fileIndex} / ${progress.totalFiles}"
         binding.tvTransferBytesAndPercent.text = "Boyut: $transferredStr / $totalStr"
         binding.tvTransferSpeedMbps.text = "Hız: ${speedFormat.format(progress.speedMbps)} MB/s"
+        binding.tvTransferElapsedTime.text = "Geçen Süre: $elapsedSecStr"
 
         if (!progress.savedFilePath.isNullOrEmpty()) {
             lastSavedOrPartialFilePath = progress.savedFilePath
@@ -928,7 +1053,15 @@ class MainActivity : AppCompatActivity() {
                 isTransferCurrentlyFinishedOrStopped = true
                 binding.progressSessionItem.progress = 100
                 binding.progressBarTransfer.progress = 100
-                binding.tvTransferTitle.text = "Tamamlandı (0:00)"
+                // Auto-expand stats card on completion so user clearly sees Total Elapsed Time & Average Speed!
+                if (!isAdvancedStatsExpanded) {
+                    isAdvancedStatsExpanded = true
+                    binding.layoutAdvancedStats.visibility = View.VISIBLE
+                    binding.tvToggleAdvancedLabel.text = "Gizle"
+                }
+                binding.tvTransferTitle.text = "Aktarım Tamamlandı (%100)"
+                binding.tvTransferSpeedMbps.text = "Ortalama Hız: ${speedFormat.format(progress.speedMbps)} MB/s"
+                binding.tvTransferElapsedTime.text = "Toplam Geçen Süre: $elapsedSecStr"
                 binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
                 binding.tvCancelOrDoneLabel.text = "Kapat"
@@ -966,6 +1099,16 @@ class MainActivity : AppCompatActivity() {
         val mins = seconds / 60L
         val secs = seconds % 60L
         return String.format("%d:%02d", mins, secs)
+    }
+
+    private fun formatElapsedSeconds(elapsedMs: Long): String {
+        val sec = elapsedMs / 1000.0
+        if (sec < 60.0) {
+            return String.format("%.1f sn", sec)
+        }
+        val m = (sec / 60).toInt()
+        val s = (sec % 60).toInt()
+        return "${m} dk ${s} sn"
     }
 
     private fun handleClipboardPasteSelection() {
@@ -1225,7 +1368,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         val etInput = view.findViewById<EditText>(R.id.etMessageInput)
-        etInput.hint = "Hedef IP Adresi (Örn: 192.168.1.92)"
+        etInput.hint = "Hedef IP Adresi (Örn: 192.168.49.1 veya 192.168.1.92)"
         view.findViewById<TextView>(R.id.btnCancelTextDialog).setOnClickListener { dialog.dismiss() }
         view.findViewById<TextView>(R.id.btnConfirmTextDialog).setOnClickListener {
             val ip = etInput.text.toString().trim()
@@ -1272,9 +1415,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val speedFmt = DecimalFormat("0.0")
         val labels = records.map { rec ->
             val statusTag = if (rec.isPartial) "[KISMİ KORUNDU]" else "[TAMAMLANDI]"
-            "$statusTag ${rec.fileName} (${StorageHelper.formatFileSize(rec.bytesWritten)})"
+            val durStr = formatElapsedSeconds(rec.elapsedMillis)
+            "$statusTag ${rec.fileName} (${StorageHelper.formatFileSize(rec.bytesWritten)} • $durStr • ${speedFmt.format(rec.avgSpeedMbps)} MB/s)"
         }.toTypedArray()
 
         AlertDialog.Builder(this)
@@ -1295,13 +1440,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun showNetworkAndDeviceInfoDialog() {
         val ips = lanDiscoveryManager.getLocalIpAddresses()
-        val ipText = if (ips.isEmpty()) "Wi-Fi / Hotspot Bekleniyor" else ips.joinToString(", ")
+        val ipText = if (ips.isEmpty()) "Wi-Fi Direct P2P Hazır" else ips.joinToString(", ")
         val hwBands = wifiDirectManager.getHardwareBandCapabilitySummary()
         val msg = buildString {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: NIO SocketChannel + 8 MB Direct DMA")
+            appendLine("• Zero-Copy Motoru: NIO SocketChannel + 8 MB Direct DMA + EOF ACK")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1317,7 +1462,7 @@ class MainActivity : AppCompatActivity() {
         val primaryIp = ips.firstOrNull() ?: "192.168.49.1"
         val url = "http://$primaryIp:53319"
         val msg = buildString {
-            appendLine("Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Hotspot ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:")
+            appendLine("Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Doğrudan Köprü ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:")
             appendLine()
             append(url)
         }
@@ -1331,17 +1476,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTroubleshootDialog() {
         val hwBands = wifiDirectManager.getHardwareBandCapabilitySummary()
-        val ips = lanDiscoveryManager.getLocalIpAddresses().joinToString(", ").ifEmpty { "Yok" }
+        val ips = lanDiscoveryManager.getLocalIpAddresses().joinToString(", ").ifEmpty { "Çevrimdışı P2P Modu" }
         val msg = buildString {
             appendLine("• Donanım Bant Desteği: $hwBands")
-            appendLine("• Aktif IP Adresleri: $ips")
+            appendLine("• Aktif Ağ Durumu: $ips")
             appendLine()
-            append("İki cihaz aynı Wi-Fi ağındayken veya telefonlardan birinin Mobil Erişim Noktası (Hotspot) açıkken birbirini otomatik bulur. Listeden hedef cihaza dokunduğunuzda karşı ekranda tam ekran onay penceresi açılır ve maksimum donanım hızında aktarım başlar.")
+            append("Hiçbir modeme bağlı değilken bile iki cihazda Wi-Fi açık olduğunda Wi-Fi Direct üzerinden birbirini görür. Listeden 'Doğrudan Köprü' cihazına dokunduğunuzda karşı ekranda çıkan sistem bağlantısını onaylamanız yeterlidir; cihazlar otomatik olarak 6 GHz / 5 GHz köprüsü kurup aktarımı başlatır.")
         }
         AlertDialog.Builder(this)
             .setTitle("Sorun Giderme")
             .setMessage(msg)
-            .setPositiveButton("Ağları & Köprüleri Sıfırla") { _: DialogInterface, _: Int ->
+            .setPositiveButton("P2P & Ağ Taramasını Sıfırla") { _: DialogInterface, _: Int ->
                 wifiDirectManager.cleanupStaleGroups {
                     wifiDirectManager.discoverPeers()
                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
@@ -1392,6 +1537,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        p2pWaitClientJob?.cancel()
         skeletonAnimationJob?.cancel()
         wifiDirectManager.stop()
         lanDiscoveryManager.stop()

@@ -11,10 +11,10 @@ enum class DeviceCategory {
     SERVER
 }
 
-enum class ConnectionTransport(val label: String) {
-    WIFI_DIRECT_5GHZ("5 GHz Wi-Fi Direct"),
-    WIFI_DIRECT_2_4GHZ("2.4 GHz Wi-Fi Direct"),
-    LAN_HOTSPOT("LAN / Hotspot Doğrudan IP")
+enum class ConnectionTransport(val label: String, val priority: Int) {
+    WIFI_DIRECT_5GHZ("5 GHz Doğrudan Köprü (Maks Hız)", 1),
+    WIFI_DIRECT_2_4GHZ("2.4 GHz Doğrudan Köprü", 2),
+    LAN_HOTSPOT("Yerel Ağ / Modem IP", 3)
 }
 
 enum class SendMode {
@@ -26,10 +26,12 @@ enum class SendMode {
 enum class TransferStatus {
     IDLE,
     CONNECTING,
+    WAITING_APPROVAL,
     TRANSFERRING,
     PAUSED,
     COMPLETED,
     PARTIAL_PRESERVED,
+    REJECTED,
     ERROR
 }
 
@@ -61,6 +63,16 @@ data class PeerDevice(
     val transport: ConnectionTransport = ConnectionTransport.LAN_HOTSPOT,
     val isFavorite: Boolean = false,
     val lastSeenMs: Long = System.currentTimeMillis()
+)
+
+data class IncomingTransferRequest(
+    val senderAlias: String,
+    val senderIp: String,
+    val transportLabel: String,
+    val fileCount: Int,
+    val totalBytes: Long,
+    val filePreviewLines: String,
+    val onDecision: (Boolean) -> Unit
 )
 
 data class TransferProgress(

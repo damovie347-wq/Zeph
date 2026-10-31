@@ -23,12 +23,6 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * ZERO-CONFIG LAN & HOTSPOT DISCOVERY (NsdManager mDNS + UDP Broadcast):
- * When two devices are on the same Wi-Fi network OR one phone connects to the other's
- * 5 GHz / 2.4 GHz Mobile Hotspot, discovers peers immediately via IP so ZeroCopyTransferEngine
- * can stream directly at maximum hardware speed without waiting for Wi-Fi Direct pairing.
- */
 class LanDiscoveryManager(
     private val context: Context,
     private val getLocalAlias: () -> String,
@@ -54,11 +48,20 @@ class LanDiscoveryManager(
         startNsdRegistrationAndDiscovery()
     }
 
+    private fun classifyTransportByIp(ip: String): ConnectionTransport {
+        return if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) {
+            // 192.168.49.x is Android Wi-Fi Direct 5GHz/2.4GHz hardware bridge; 192.168.43.x is Direct Hotspot
+            ConnectionTransport.WIFI_DIRECT_5GHZ
+        } else {
+            ConnectionTransport.LAN_HOTSPOT
+        }
+    }
+
     private fun acquireMulticastLock() {
         try {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             if (wm != null && multicastLock == null) {
-                multicastLock = wm.createMulticastLock("FastTransferMulticastLock").apply {
+                multicastLock = wm.createMulticastLock("ZephMulticastLock").apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -86,24 +89,23 @@ class LanDiscoveryManager(
 
                     val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
                     val json = JSONObject(payload)
-                    val alias = json.optString("alias", "FastTransfer Cihazı")
+                    val alias = json.optString("alias", "Zeph Cihazı")
                     val port = json.optInt("port", transferPort)
-                    val band = json.optString("band", "LAN / Hotspot (5GHz/2.4GHz)")
+                    val transport = classifyTransportByIp(senderIp)
 
                     val peer = PeerDevice(
-                        id = "lan_$senderIp",
+                        id = "ip_$senderIp",
                         alias = alias,
                         ipAddress = senderIp,
                         macAddress = null,
                         port = port,
                         category = DeviceCategory.PHONE,
-                        transport = ConnectionTransport.LAN_HOTSPOT,
+                        transport = transport,
                         lastSeenMs = System.currentTimeMillis()
                     )
                     peersByIp[senderIp] = peer
                     notifyPeersUpdated()
 
-                    // If this was a discovery ping, immediately unicast a reply back
                     if (json.optBoolean("ping", false)) {
                         sendUnicastAnnounce(senderIp)
                     }
@@ -124,7 +126,7 @@ class LanDiscoveryManager(
             while (isActive) {
                 broadcastDiscoveryBeacon(isPing = true)
                 pruneStalePeers()
-                delay(2500L)
+                delay(2200L)
             }
         }
     }
@@ -140,7 +142,13 @@ class LanDiscoveryManager(
                 val bytes = json.toString().toByteArray(Charsets.UTF_8)
                 DatagramSocket().use { sock ->
                     sock.broadcast = true
-                    val targets = mutableSetOf("255.255.255.255")
+                    val targets = mutableSetOf(
+                        "255.255.255.255",
+                        "192.168.49.1",
+                        "192.168.49.255",
+                        "192.168.43.1",
+                        "192.168.43.255"
+                    )
                     targets.addAll(getSubnetBroadcastAddresses())
                     for (addrStr in targets) {
                         try {
@@ -183,9 +191,14 @@ class LanDiscoveryManager(
         }
     }
 
-    fun addManualFavoritePeer(ipAddress: String, alias: String = "Manuel Cihaz ($ipAddress)") {
+    fun addManualFavoritePeer(
+        ipAddress: String,
+        alias: String = "Doğrudan Cihaz ($ipAddress)",
+        isP2pBridge: Boolean = false
+    ) {
         val cleanIp = ipAddress.trim()
-        if (cleanIp.isEmpty()) return
+        if (cleanIp.isEmpty() || isOwnLocalIp(cleanIp)) return
+        val transport = if (isP2pBridge) ConnectionTransport.WIFI_DIRECT_5GHZ else classifyTransportByIp(cleanIp)
         peersByIp[cleanIp] = PeerDevice(
             id = "fav_$cleanIp",
             alias = alias,
@@ -193,7 +206,7 @@ class LanDiscoveryManager(
             macAddress = null,
             port = transferPort,
             category = DeviceCategory.PHONE,
-            transport = ConnectionTransport.LAN_HOTSPOT,
+            transport = transport,
             isFavorite = true,
             lastSeenMs = System.currentTimeMillis() + 3_600_000L
         )
@@ -206,7 +219,7 @@ class LanDiscoveryManager(
             val mgr = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
             nsdManager = mgr
             val serviceInfo = NsdServiceInfo().apply {
-                serviceName = "FastTransfer_${getLocalAlias().replace(" ", "_")}"
+                serviceName = "Zeph_${getLocalAlias().replace(" ", "_")}"
                 serviceType = SERVICE_TYPE
                 port = transferPort
             }
@@ -242,15 +255,18 @@ class LanDiscoveryManager(
                         val info = resolved ?: return
                         val hostIp = info.host?.hostAddress ?: return
                         if (isOwnLocalIp(hostIp)) return
-                        val rawName = info.serviceName.removePrefix("FastTransfer_").replace("_", " ")
+                        val rawName = info.serviceName
+                            .removePrefix("Zeph_")
+                            .removePrefix("FastTransfer_")
+                            .replace("_", " ")
                         peersByIp[hostIp] = PeerDevice(
-                            id = "lan_$hostIp",
-                            alias = rawName.ifBlank { "LAN Cihazı ($hostIp)" },
+                            id = "ip_$hostIp",
+                            alias = rawName.ifBlank { "Cihaz ($hostIp)" },
                             ipAddress = hostIp,
                             macAddress = null,
                             port = info.port.takeIf { it > 0 } ?: transferPort,
                             category = DeviceCategory.PHONE,
-                            transport = ConnectionTransport.LAN_HOTSPOT,
+                            transport = classifyTransportByIp(hostIp),
                             lastSeenMs = System.currentTimeMillis()
                         )
                         notifyPeersUpdated()
@@ -273,7 +289,7 @@ class LanDiscoveryManager(
         val iterator = peersByIp.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (!entry.value.isFavorite && now - entry.value.lastSeenMs > 15_000L) {
+            if (!entry.value.isFavorite && now - entry.value.lastSeenMs > 16_000L) {
                 iterator.remove()
                 changed = true
             }
@@ -284,7 +300,11 @@ class LanDiscoveryManager(
     }
 
     private fun notifyPeersUpdated() {
-        onLanPeersChanged(peersByIp.values.sortedBy { it.alias })
+        onLanPeersChanged(
+            peersByIp.values.sortedWith(
+                compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias }
+            )
+        )
     }
 
     fun getLocalIpAddresses(): List<String> {
@@ -301,7 +321,8 @@ class LanDiscoveryManager(
             }
         } catch (_: Throwable) {
         }
-        return ips
+        // Sort 192.168.49.x (Wi-Fi Direct 5GHz bridge) first
+        return ips.sortedBy { if (it.startsWith("192.168.49.")) 0 else 1 }
     }
 
     private fun isOwnLocalIp(ip: String): Boolean {
@@ -323,9 +344,6 @@ class LanDiscoveryManager(
             }
         } catch (_: Throwable) {
         }
-        // Also include Android Wi-Fi Direct & Hotspot default subnet broadcasts
-        list.add("192.168.49.255")
-        list.add("192.168.43.255")
         return list
     }
 

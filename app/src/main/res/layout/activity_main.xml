@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@color/bg_main_dark">
 
-    <!-- MAIN CONTENT CONTAINER + BOTTOM NAV -->
+    <!-- MAIN CONTENT CONTAINER + GLOBAL TRANSFER CARD + BOTTOM NAV -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -69,17 +69,17 @@
 
                     <com.fasttransfer.p2p.ui.RadarPulseView
                         android:id="@+id/radarPulseReceive"
-                        android:layout_width="176dp"
-                        android:layout_height="176dp" />
+                        android:layout_width="172dp"
+                        android:layout_height="172dp" />
 
                     <TextView
                         android:id="@+id/tvDeviceAliasReceive"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="24dp"
+                        android:layout_marginTop="20dp"
                         android:text="Kind Carrot"
                         android:textColor="@color/text_primary_white"
-                        android:textSize="38sp"
+                        android:textSize="36sp"
                         android:fontFamily="sans-serif" />
 
                     <TextView
@@ -89,41 +89,77 @@
                         android:layout_marginTop="8dp"
                         android:background="@drawable/bg_badge_band"
                         android:paddingHorizontal="12dp"
-                        android:paddingVertical="4dp"
-                        android:text="5 GHz / 2.4 GHz Otomatik • Port 53317 Hazır"
+                        android:paddingVertical="5dp"
+                        android:text="5 GHz Doğrudan Köprü &amp; LAN Hazır • Port 53317"
                         android:textColor="@color/accent_cyan_text"
                         android:textSize="12sp" />
                 </LinearLayout>
 
-                <!-- Bottom Pill Button: "Link üzerinden al" -->
+                <!-- Bottom Pill Buttons: "5 GHz Doğrudan Köprü Kur" & "Link üzerinden al" -->
                 <LinearLayout
-                    android:id="@+id/btnReceiveViaLink"
                     android:layout_width="wrap_content"
-                    android:layout_height="44dp"
+                    android:layout_height="wrap_content"
                     android:layout_alignParentBottom="true"
                     android:layout_centerHorizontal="true"
-                    android:layout_marginBottom="16dp"
-                    android:background="@drawable/bg_button_outline_pill"
-                    android:clickable="true"
-                    android:focusable="true"
+                    android:layout_marginBottom="8dp"
                     android:gravity="center"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="20dp">
+                    android:orientation="vertical">
 
-                    <ImageView
-                        android:layout_width="18dp"
-                        android:layout_height="18dp"
-                        android:src="@drawable/ic_globe_link"
-                        app:tint="@color/accent_cyan_text" />
-
-                    <TextView
+                    <LinearLayout
+                        android:id="@+id/btnCreate5GhzBridge"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:text="@string/receive_via_link"
-                        android:textColor="@color/text_primary_white"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="8dp"
+                        android:background="@drawable/bg_button_cyan_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:orientation="horizontal"
+                        android:paddingHorizontal="18dp">
+
+                        <ImageView
+                            android:layout_width="18dp"
+                            android:layout_height="18dp"
+                            android:src="@drawable/ic_wifi_receive"
+                            app:tint="@color/accent_cyan_dark_text" />
+
+                        <TextView
+                            android:id="@+id/tvCreate5GhzBridge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="5 GHz Doğrudan Köprü Kur (Modemsiz Maks Hız)"
+                            android:textColor="@color/accent_cyan_dark_text"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/btnReceiveViaLink"
+                        android:layout_width="wrap_content"
+                        android:layout_height="42dp"
+                        android:background="@drawable/bg_button_outline_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:orientation="horizontal"
+                        android:paddingHorizontal="20dp">
+
+                        <ImageView
+                            android:layout_width="18dp"
+                            android:layout_height="18dp"
+                            android:src="@drawable/ic_globe_link"
+                            app:tint="@color/accent_cyan_text" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="@string/receive_via_link"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
                 </LinearLayout>
 
             </RelativeLayout>
@@ -367,8 +403,8 @@
 
                             <ImageButton
                                 android:id="@+id/btnClearSelection"
-                                android:layout_width="28dp"
-                                android:layout_height="28dp"
+                                android:layout_width="32dp"
+                                android:layout_height="32dp"
                                 android:layout_alignParentEnd="true"
                                 android:background="?attr/selectableItemBackgroundBorderless"
                                 android:contentDescription="Temizle"
@@ -598,137 +634,6 @@
                         android:textColor="@color/text_secondary_muted"
                         android:textSize="13sp" />
 
-                    <!-- ========================================================= -->
-                    <!-- LIVE ZERO-COPY TRANSFER SPEEDOMETER & %5 PARTIAL CONTROLS -->
-                    <!-- ========================================================= -->
-                    <LinearLayout
-                        android:id="@+id/cardActiveTransfer"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="20dp"
-                        android:background="@drawable/bg_card_nearby"
-                        android:orientation="vertical"
-                        android:padding="16dp"
-                        android:visibility="gone">
-
-                        <RelativeLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content">
-
-                            <TextView
-                                android:id="@+id/tvTransferTitle"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Zero-Copy Aktarım (5 GHz Direct)"
-                                android:textColor="@color/accent_cyan_bright"
-                                android:textSize="15sp"
-                                android:textStyle="bold" />
-
-                            <TextView
-                                android:id="@+id/tvTransferSpeedMbps"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_alignParentEnd="true"
-                                android:text="0.0 MB/s"
-                                android:textColor="@color/accent_green_speed"
-                                android:textSize="16sp"
-                                android:textStyle="bold" />
-                        </RelativeLayout>
-
-                        <TextView
-                            android:id="@+id/tvTransferFileName"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:ellipsize="middle"
-                            android:singleLine="true"
-                            android:text="video.mp4"
-                            android:textColor="@color/text_primary_white"
-                            android:textSize="13sp" />
-
-                        <ProgressBar
-                            android:id="@+id/progressBarTransfer"
-                            style="?android:attr/progressBarStyleHorizontal"
-                            android:layout_width="match_parent"
-                            android:layout_height="10dp"
-                            android:layout_marginTop="10dp"
-                            android:max="100"
-                            android:progress="0"
-                            android:progressTint="@color/accent_cyan_bright"
-                            android:progressBackgroundTint="@color/bg_skeleton" />
-
-                        <RelativeLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp">
-
-                            <TextView
-                                android:id="@+id/tvTransferBytesAndPercent"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="%0 (0 MB / 0 MB)"
-                                android:textColor="@color/text_secondary_muted"
-                                android:textSize="12sp" />
-
-                            <TextView
-                                android:id="@+id/tvTransferEta"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_alignParentEnd="true"
-                                android:text="Kalan Süre: Hesaplanıyor..."
-                                android:textColor="@color/text_secondary_muted"
-                                android:textSize="12sp" />
-                        </RelativeLayout>
-
-                        <!-- Action Buttons: Duraklat/Devam, İptal Et (%5 Kısmi Dosya Koru), Kısmi Dosyayı Aç -->
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:gravity="end"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:id="@+id/btnOpenPartialFile"
-                                android:layout_width="wrap_content"
-                                android:layout_height="36dp"
-                                android:layout_marginEnd="8dp"
-                                android:background="@drawable/bg_button_outline_pill"
-                                android:gravity="center"
-                                android:paddingHorizontal="14dp"
-                                android:text="Kısmi Dosyayı Test Et / Aç"
-                                android:textColor="@color/accent_green_speed"
-                                android:textSize="12sp"
-                                android:textStyle="bold"
-                                android:visibility="gone" />
-
-                            <TextView
-                                android:id="@+id/btnPauseResumeTransfer"
-                                android:layout_width="wrap_content"
-                                android:layout_height="36dp"
-                                android:layout_marginEnd="8dp"
-                                android:background="@drawable/bg_button_outline_pill"
-                                android:gravity="center"
-                                android:paddingHorizontal="14dp"
-                                android:text="Duraklat"
-                                android:textColor="@color/accent_warning_amber"
-                                android:textSize="12sp"
-                                android:textStyle="bold" />
-
-                            <TextView
-                                android:id="@+id/btnCancelTransferKeepPartial"
-                                android:layout_width="wrap_content"
-                                android:layout_height="36dp"
-                                android:background="@drawable/bg_button_outline_pill"
-                                android:gravity="center"
-                                android:paddingHorizontal="14dp"
-                                android:text="Durdur (Kısmi Koru)"
-                                android:textColor="@color/accent_danger_red"
-                                android:textSize="12sp"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-                    </LinearLayout>
-
                 </LinearLayout>
             </ScrollView>
 
@@ -801,7 +706,7 @@
                             android:textStyle="bold" />
                     </LinearLayout>
 
-                    <!-- Frequency Band Policy -->
+                    <!-- Frequency Band & Approval Policy -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -813,7 +718,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Kablosuz Frekans Müzakeresi (Wi-Fi Direct &amp; LAN)"
+                            android:text="Kablosuz Köprü &amp; İzin Ayarları"
                             android:textColor="@color/accent_cyan_bright"
                             android:textSize="14sp"
                             android:textStyle="bold" />
@@ -823,10 +728,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="6dp"
-                            android:text="Otomatik Kademeli Geçiş Aktif:
-1) 6 GHz / 5 GHz (GROUP_OPERATING_BAND_AUTO / 5_GHZ)
-2) Hata durumunda 0ms gecikmeyle 2.4 GHz Fallback
-3) Aynı Wi-Fi / Hotspot üzerinde NSD + UDP Doğrudan Akış"
+                            android:text="Modem Üzerinden (AP Relay) hız yarıya düşer (~50 MB/s). Maksimum fiziksel hız (100+ MB/s) için Alım ekranındaki '5 GHz Doğrudan Köprü Kur' butonunu veya listedeki '5 GHz Wi-Fi Direct' kanalını kullanın."
                             android:textColor="@color/text_secondary_muted"
                             android:textSize="13sp" />
 
@@ -836,11 +738,20 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
                             android:checked="true"
-                            android:text="Önce 5 GHz / 6 GHz Dene (Desteklenmezse 2.4 GHz)"
+                            android:text="Önce 5 GHz / 6 GHz Doğrudan Köprü Dene (Desteklenmezse 2.4 GHz)"
+                            android:textColor="@color/text_primary_white" />
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switchAutoAccept"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:checked="false"
+                            android:text="Gelen Dosyaları Onay Sormadan Otomatik Kabul Et"
                             android:textColor="@color/text_primary_white" />
                     </LinearLayout>
 
-                    <!-- Zero-Copy & %5 Partial Preservation Info -->
+                    <!-- Zero-Copy & %5 Partial Preservation Info + Clear History -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -862,16 +773,183 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="6dp"
                             android:text="• Hedef Klasör: /storage/emulated/0/Download (Orijinal Uzantı)
-• Soket Tamponu: SO_SNDBUF=8MB, SO_RCVBUF=8MB, TCP_NODELAY=true
-• İptal / Kopma Kuralı: Dosya ASLA silinmez; posix_fallocate sonrası gerçek boyuta truncate() + fsync() yapılır ve anında oynatılabilir."
+• Soket Tamponu: SO_SNDBUF=16MB, SO_RCVBUF=16MB, 32MB DMA Zero-Copy
+• İptal / Kopma Kuralı: Dosya ASLA silinmez; posix_fallocate sonrası gerçek boyuta truncate() + fsync() yapılır ve FileProvider ile anında oynatılabilir."
                             android:textColor="@color/text_secondary_muted"
                             android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/btnClearHistorySettings"
+                            android:layout_width="wrap_content"
+                            android:layout_height="38dp"
+                            android:layout_gravity="end"
+                            android:layout_marginTop="12dp"
+                            android:background="@drawable/bg_button_outline_pill"
+                            android:gravity="center"
+                            android:paddingHorizontal="18dp"
+                            android:text="Aktarım Geçmişini Temizle"
+                            android:textColor="@color/accent_danger_red"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
                     </LinearLayout>
 
                 </LinearLayout>
             </ScrollView>
 
         </FrameLayout>
+
+        <!-- ========================================================= -->
+        <!-- GLOBAL LIVE ZERO-COPY TRANSFER SPEEDOMETER & %5 PARTIAL   -->
+        <!-- (Visible on BOTH Alım and Gönder tabs, with 'X' Dismiss!) -->
+        <!-- ========================================================= -->
+        <LinearLayout
+            android:id="@+id/cardActiveTransfer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="14dp"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_card_nearby"
+            android:elevation="8dp"
+            android:orientation="vertical"
+            android:padding="14dp"
+            android:visibility="gone">
+
+            <RelativeLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView
+                    android:id="@+id/tvTransferTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_alignParentStart="true"
+                    android:layout_centerVertical="true"
+                    android:layout_toStartOf="@+id/tvTransferSpeedMbps"
+                    android:ellipsize="end"
+                    android:singleLine="true"
+                    android:text="Zero-Copy Aktarım"
+                    android:textColor="@color/accent_cyan_bright"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvTransferSpeedMbps"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_centerVertical="true"
+                    android:layout_marginEnd="10dp"
+                    android:layout_toStartOf="@+id/btnDismissTransferCard"
+                    android:text="0.0 MB/s"
+                    android:textColor="@color/accent_green_speed"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/btnDismissTransferCard"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:layout_alignParentEnd="true"
+                    android:layout_centerVertical="true"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Kapat ve Sıfırla"
+                    android:padding="4dp"
+                    android:src="@drawable/ic_close_x"
+                    app:tint="@color/text_primary_white" />
+            </RelativeLayout>
+
+            <TextView
+                android:id="@+id/tvTransferFileName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:ellipsize="middle"
+                android:singleLine="true"
+                android:text="video.mp4"
+                android:textColor="@color/text_primary_white"
+                android:textSize="13sp" />
+
+            <ProgressBar
+                android:id="@+id/progressBarTransfer"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="@color/accent_cyan_bright"
+                android:progressBackgroundTint="@color/bg_skeleton" />
+
+            <RelativeLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp">
+
+                <TextView
+                    android:id="@+id/tvTransferBytesAndPercent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="%0 (0 MB / 0 MB)"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tvTransferEta"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_alignParentEnd="true"
+                    android:text="Kalan Süre: Hesaplanıyor..."
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="12sp" />
+            </RelativeLayout>
+
+            <!-- Action Buttons: Kısmi Dosyayı Aç, Duraklat/Devam, Durdur (%5 Koru) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnOpenPartialFile"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_button_cyan_pill"
+                    android:gravity="center"
+                    android:paddingHorizontal="14dp"
+                    android:text="Dosyayı Aç / Test Et"
+                    android:textColor="@color/accent_cyan_dark_text"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/btnPauseResumeTransfer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_button_outline_pill"
+                    android:gravity="center"
+                    android:paddingHorizontal="12dp"
+                    android:text="Duraklat"
+                    android:textColor="@color/accent_warning_amber"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnCancelTransferKeepPartial"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_button_outline_pill"
+                    android:gravity="center"
+                    android:paddingHorizontal="12dp"
+                    android:text="Durdur (%5 Koru)"
+                    android:textColor="@color/accent_danger_red"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
 
         <!-- ========================================================= -->
         <!-- BOTTOM NAVIGATION BAR (Video 00:02 - 00:40: Alım, Gönder, Ayarlar) -->

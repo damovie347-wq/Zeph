@@ -50,11 +50,21 @@ class LanDiscoveryManager(
 
     private fun classifyTransportByIp(ip: String): ConnectionTransport {
         return if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) {
-            // 192.168.49.x is Android Wi-Fi Direct 5GHz/2.4GHz hardware bridge; 192.168.43.x is Direct Hotspot
             ConnectionTransport.WIFI_DIRECT_5GHZ
         } else {
             ConnectionTransport.LAN_HOTSPOT
         }
+    }
+
+    private fun isWifiOrHotspotInterface(name: String): Boolean {
+        val n = name.lowercase()
+        // Exclude cellular/mobile data (rmnet, ccmni, pdp) and VPN/tunnel (tun, tap, dummy) interfaces
+        if (n.startsWith("rmnet") || n.startsWith("ccmni") || n.startsWith("pdp") ||
+            n.startsWith("tun") || n.startsWith("tap") || n.startsWith("dummy") || n.startsWith("lo")
+        ) {
+            return false
+        }
+        return true
     }
 
     private fun acquireMulticastLock() {
@@ -73,48 +83,51 @@ class LanDiscoveryManager(
     private fun startUdpListener() {
         udpListenerJob?.cancel()
         udpListenerJob = scope.launch {
-            var socket: DatagramSocket? = null
-            try {
-                socket = DatagramSocket(null).apply {
-                    reuseAddress = true
-                    broadcast = true
-                    bind(InetSocketAddress(discoveryUdpPort))
-                }
-                val buffer = ByteArray(2048)
-                while (isActive) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
-                    val senderIp = packet.address?.hostAddress ?: continue
-                    if (isOwnLocalIp(senderIp)) continue
-
-                    val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
-                    val json = JSONObject(payload)
-                    val alias = json.optString("alias", "Zeph Cihazı")
-                    val port = json.optInt("port", transferPort)
-                    val transport = classifyTransportByIp(senderIp)
-
-                    val peer = PeerDevice(
-                        id = "ip_$senderIp",
-                        alias = alias,
-                        ipAddress = senderIp,
-                        macAddress = null,
-                        port = port,
-                        category = DeviceCategory.PHONE,
-                        transport = transport,
-                        lastSeenMs = System.currentTimeMillis()
-                    )
-                    peersByIp[senderIp] = peer
-                    notifyPeersUpdated()
-
-                    if (json.optBoolean("ping", false)) {
-                        sendUnicastAnnounce(senderIp)
-                    }
-                }
-            } catch (_: Throwable) {
-            } finally {
+            while (isActive) {
+                var socket: DatagramSocket? = null
                 try {
-                    socket?.close()
+                    socket = DatagramSocket(null).apply {
+                        reuseAddress = true
+                        broadcast = true
+                        bind(InetSocketAddress(discoveryUdpPort))
+                    }
+                    val buffer = ByteArray(2048)
+                    while (isActive) {
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet)
+                        val senderIp = packet.address?.hostAddress ?: continue
+                        if (isOwnLocalIp(senderIp)) continue
+
+                        val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                        val json = JSONObject(payload)
+                        val alias = json.optString("alias", "Zeph Cihazı")
+                        val port = json.optInt("port", transferPort)
+                        val transport = classifyTransportByIp(senderIp)
+
+                        val peer = PeerDevice(
+                            id = "ip_$senderIp",
+                            alias = alias,
+                            ipAddress = senderIp,
+                            macAddress = null,
+                            port = port,
+                            category = DeviceCategory.PHONE,
+                            transport = transport,
+                            lastSeenMs = System.currentTimeMillis()
+                        )
+                        peersByIp[senderIp] = peer
+                        notifyPeersUpdated()
+
+                        if (json.optBoolean("ping", false)) {
+                            sendUnicastAnnounce(senderIp)
+                        }
+                    }
                 } catch (_: Throwable) {
+                    delay(500L)
+                } finally {
+                    try {
+                        socket?.close()
+                    } catch (_: Throwable) {
+                    }
                 }
             }
         }
@@ -126,7 +139,7 @@ class LanDiscoveryManager(
             while (isActive) {
                 broadcastDiscoveryBeacon(isPing = true)
                 pruneStalePeers()
-                delay(2200L)
+                delay(2000L)
             }
         }
     }
@@ -214,6 +227,12 @@ class LanDiscoveryManager(
         sendUnicastAnnounce(cleanIp)
     }
 
+    fun removePeerByIp(ipAddress: String) {
+        if (peersByIp.remove(ipAddress) != null) {
+            notifyPeersUpdated()
+        }
+    }
+
     private fun startNsdRegistrationAndDiscovery() {
         try {
             val mgr = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
@@ -289,7 +308,7 @@ class LanDiscoveryManager(
         val iterator = peersByIp.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (!entry.value.isFavorite && now - entry.value.lastSeenMs > 16_000L) {
+            if (!entry.value.isFavorite && now - entry.value.lastSeenMs > 12_000L) {
                 iterator.remove()
                 changed = true
             }
@@ -312,7 +331,7 @@ class LanDiscoveryManager(
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return ips
             for (nif in interfaces) {
-                if (!nif.isUp || nif.isLoopback) continue
+                if (!nif.isUp || nif.isLoopback || !isWifiOrHotspotInterface(nif.name)) continue
                 for (addr in nif.inetAddresses) {
                     if (addr is Inet4Address && !addr.isLoopbackAddress) {
                         addr.hostAddress?.let { ips.add(it) }
@@ -321,12 +340,20 @@ class LanDiscoveryManager(
             }
         } catch (_: Throwable) {
         }
-        // Sort 192.168.49.x (Wi-Fi Direct 5GHz bridge) first
         return ips.sortedBy { if (it.startsWith("192.168.49.")) 0 else 1 }
     }
 
     private fun isOwnLocalIp(ip: String): Boolean {
-        return getLocalIpAddresses().contains(ip)
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return false
+            for (nif in interfaces) {
+                for (addr in nif.inetAddresses) {
+                    if (addr.hostAddress == ip) return true
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return false
     }
 
     private fun getSubnetBroadcastAddresses(): List<String> {
@@ -334,7 +361,7 @@ class LanDiscoveryManager(
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return list
             for (nif in interfaces) {
-                if (!nif.isUp || nif.isLoopback) continue
+                if (!nif.isUp || nif.isLoopback || !isWifiOrHotspotInterface(nif.name)) continue
                 for (ia in nif.interfaceAddresses) {
                     val bcast = ia.broadcast
                     if (bcast is Inet4Address) {

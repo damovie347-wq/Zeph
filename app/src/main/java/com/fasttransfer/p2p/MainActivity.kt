@@ -188,12 +188,20 @@ class MainActivity : AppCompatActivity() {
         deviceAlias = prefs.getString("device_alias", "Kind Carrot") ?: "Kind Carrot"
         val savedFavs = prefs.getStringSet("favorite_ips", emptySet()) ?: emptySet()
         val autoAccept = prefs.getBoolean("auto_accept_incoming", false)
+        val keepNotif = prefs.getBoolean("keep_service_notif", false)
         favoriteIps.clear()
-        favoriteIps.addAll(savedFavs)
+        // Filter out any old ghost 192.168.49.1 entry that was saved in earlier versions
+        for (ip in savedFavs) {
+            if (ip != "192.168.49.1") {
+                favoriteIps.add(ip)
+            }
+        }
+        savePreferences()
 
         binding.tvDeviceAliasReceive.text = deviceAlias
         binding.etSettingsDeviceAlias.setText(deviceAlias)
         binding.switchAutoAccept.isChecked = autoAccept
+        binding.switchKeepServiceNotification.isChecked = keepNotif
     }
 
     private fun savePreferences() {
@@ -202,7 +210,30 @@ class MainActivity : AppCompatActivity() {
             .putString("device_alias", deviceAlias)
             .putStringSet("favorite_ips", favoriteIps)
             .putBoolean("auto_accept_incoming", binding.switchAutoAccept.isChecked)
+            .putBoolean("keep_service_notif", binding.switchKeepServiceNotification.isChecked)
             .apply()
+    }
+
+    private fun setHardwareServiceRunning(active: Boolean) {
+        val intent = Intent(this, TransferForegroundService::class.java).apply {
+            action = if (active) {
+                TransferForegroundService.ACTION_START_ENGINE
+            } else {
+                TransferForegroundService.ACTION_STOP_ENGINE
+            }
+        }
+        if (active) {
+            CompatibilityHelper.startForegroundServiceCompat(this, intent)
+        } else {
+            try {
+                startService(intent)
+            } catch (_: Throwable) {
+            }
+            try {
+                stopService(Intent(this, TransferForegroundService::class.java))
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun setupSplashAndRadarViews() {
@@ -210,10 +241,10 @@ class MainActivity : AppCompatActivity() {
         binding.radarPulseReceive.setThemeColor(Color.parseColor("#6CD4FF"))
 
         lifecycleScope.launch {
-            delay(950L)
+            delay(900L)
             binding.splashOverlay.animate()
                 .alpha(0f)
-                .setDuration(300L)
+                .setDuration(280L)
                 .withEndAction {
                     binding.splashOverlay.visibility = View.GONE
                 }
@@ -274,8 +305,8 @@ class MainActivity : AppCompatActivity() {
             showNetworkAndDeviceInfoDialog()
         }
         binding.btnCreate5GhzBridge.setOnClickListener {
-            binding.tvCreate5GhzBridge.text = "5 GHz Doğrudan Köprü Kuruluyor..."
-            wifiDirectManager.createDirect5GhzGroupBridge { success, msg ->
+            binding.tvCreate5GhzBridge.text = "5 GHz Doğrudan Köprü Hazırlanıyor..."
+            wifiDirectManager.createDirect5GhzGroupBridge { success, msg, ssid, pass ->
                 runOnUiThread {
                     binding.tvCreate5GhzBridge.text = if (success) {
                         "5 GHz Doğrudan Köprü Aktif (192.168.49.1)"
@@ -284,7 +315,28 @@ class MainActivity : AppCompatActivity() {
                     }
                     binding.tvReceiveBandStatus.text = msg
                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+                    if (success && !ssid.isNullOrEmpty()) {
+                        val infoText = buildString {
+                            appendLine("5 GHz Modemsiz Doğrudan Köprü Kuruldu!")
+                            appendLine()
+                            appendLine("• Wi-Fi Ağ Adı (SSID): $ssid")
+                            appendLine("• Şifre: ${pass ?: "zeph12345"}")
+                            appendLine("• Köprü IP Adresi: 192.168.49.1")
+                            appendLine()
+                            append("Gönderici telefondan Çevrimdışı (Modemsiz) bağlanmak için:")
+                            appendLine()
+                            appendLine("1) Gönderici telefonda Yakınınızdaki Cihazlar listesindeki Wi-Fi Direct kaydına dokunun, VEYA")
+                            append("2) Gönderici telefonun Wi-Fi ayarlarından '$ssid' ağına bağlanın; cihazlar 192.168.49.1 üzerinden otomatik eşleşip maksimum 5 GHz hızda aktarım yapacaktır.")
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("5 GHz Doğrudan Köprü Hazır")
+                            .setMessage(infoText)
+                            .setPositiveButton("Tamam", null)
+                            .show()
+                    } else {
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -350,7 +402,6 @@ class MainActivity : AppCompatActivity() {
             showTroubleshootDialog()
         }
 
-        // Global Active Transfer Card Controls (Pause, Stop %5 Preserve, Open Partial File, and 'X' Close/Reset)
         binding.btnPauseResumeTransfer.setOnClickListener {
             val paused = transferEngine.togglePauseResume()
             binding.btnPauseResumeTransfer.text = if (paused) "Devam Et" else "Duraklat"
@@ -414,6 +465,24 @@ class MainActivity : AppCompatActivity() {
             savePreferences()
         }
 
+        binding.switchKeepServiceNotification.setOnCheckedChangeListener { _, isChecked ->
+            savePreferences()
+            setHardwareServiceRunning(isChecked)
+            val msg = if (isChecked) {
+                "Üst çubuk bildirimi aktif edildi."
+            } else {
+                "Üst çubuk bildirimi kapatıldı (Yalnızca aktarım sırasında çalışır)."
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnStopServiceNotification.setOnClickListener {
+            binding.switchKeepServiceNotification.isChecked = false
+            savePreferences()
+            setHardwareServiceRunning(false)
+            Toast.makeText(this, "Üstteki bildirim ve arka plan servisi kapatıldı.", Toast.LENGTH_SHORT).show()
+        }
+
         binding.btnClearHistorySettings.setOnClickListener {
             transferEngine.clearHistory()
             lastSavedOrPartialFilePath = null
@@ -423,10 +492,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupEngines() {
-        val serviceIntent = Intent(this, TransferForegroundService::class.java).apply {
-            action = TransferForegroundService.ACTION_START_ENGINE
+        // Only show persistent notification on startup if user explicitly enabled it in Settings!
+        if (binding.switchKeepServiceNotification.isChecked) {
+            setHardwareServiceRunning(true)
+        } else {
+            setHardwareServiceRunning(false)
         }
-        CompatibilityHelper.startForegroundServiceCompat(this, serviceIntent)
 
         transferEngine = ZeroCopyTransferEngine(
             context = this,
@@ -445,6 +516,15 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     lastSavedOrPartialFilePath = record.filePath
                 }
+            },
+            onTransferActiveStateChanged = { isActiveTransfer ->
+                runOnUiThread {
+                    if (isActiveTransfer) {
+                        setHardwareServiceRunning(true)
+                    } else if (!binding.switchKeepServiceNotification.isChecked) {
+                        setHardwareServiceRunning(false)
+                    }
+                }
             }
         )
         transferEngine.autoAcceptIncoming = binding.switchAutoAccept.isChecked
@@ -459,15 +539,12 @@ class MainActivity : AppCompatActivity() {
                     mergeAndRenderDiscoveredPeers()
                 }
             },
-            onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
+            onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel, ssid, _ ->
                 runOnUiThread {
-                    binding.tvReceiveBandStatus.text = "$bandLabel • Hazır ($groupOwnerIp)"
+                    val ssidTag = if (!ssid.isNullOrEmpty()) " • $ssid" else ""
+                    binding.tvReceiveBandStatus.text = "$bandLabel$ssidTag"
                     if (!isGroupOwner) {
-                        lanDiscoveryManager.addManualFavoritePeer(
-                            ipAddress = groupOwnerIp,
-                            alias = "5 GHz Doğrudan Köprü ($groupOwnerIp)",
-                            isP2pBridge = true
-                        )
+                        // We are the P2P Client connected to the other phone's 5 GHz Group Owner bridge!
                         lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                     } else {
                         lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
@@ -476,16 +553,24 @@ class MainActivity : AppCompatActivity() {
                     val pending = pendingPeerForDirectTransfer
                     if (pending != null && selectedTransferItems.isNotEmpty()) {
                         pendingPeerForDirectTransfer = null
-                        val targetIp = if (!isGroupOwner) {
-                            groupOwnerIp
+                        if (!isGroupOwner) {
+                            transferEngine.sendItemsToPeers(
+                                items = selectedTransferItems.toList(),
+                                targetHostIps = listOf(groupOwnerIp to 53317),
+                                transportLabel = bandLabel
+                            )
                         } else {
-                            lanPeers.firstOrNull { it.ipAddress?.startsWith("192.168.49.") == true }?.ipAddress ?: groupOwnerIp
+                            val p2pClient = lanPeers.firstOrNull { it.ipAddress?.startsWith("192.168.49.") == true }
+                            if (p2pClient?.ipAddress != null) {
+                                transferEngine.sendItemsToPeers(
+                                    items = selectedTransferItems.toList(),
+                                    targetHostIps = listOf(p2pClient.ipAddress to 53317),
+                                    transportLabel = bandLabel
+                                )
+                            } else {
+                                binding.tvTransferEta.text = "Köprü kuruldu! Karşı cihazın bağlanması bekleniyor..."
+                            }
                         }
-                        transferEngine.sendItemsToPeers(
-                            items = selectedTransferItems.toList(),
-                            targetHostIps = listOf(targetIp to 53317),
-                            transportLabel = bandLabel
-                        )
                     }
                 }
             },
@@ -654,12 +739,12 @@ class MainActivity : AppCompatActivity() {
             binding.cardActiveTransfer.visibility = View.VISIBLE
             binding.tvTransferTitle.text = "5 GHz Doğrudan Köprü Kuruluyor..."
             binding.tvTransferFileName.text = peer.alias
-            binding.tvTransferEta.text = "Wi-Fi Direct 5 GHz donanım kanalı müzakere ediliyor..."
+            binding.tvTransferEta.text = "Karşı ekranda çıkan Wi-Fi Direct davetini onaylayın..."
             wifiDirectManager.connectWithCascadingBandFallback(peer.macAddress) { success, msg ->
                 runOnUiThread {
                     if (!success) {
-                        binding.tvTransferEta.text = "Wi-Fi Direct: $msg"
-                        Toast.makeText(this, "Wi-Fi Direct: $msg", Toast.LENGTH_SHORT).show()
+                        binding.tvTransferEta.text = msg
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -741,7 +826,7 @@ class MainActivity : AppCompatActivity() {
                 binding.btnOpenPartialFile.visibility = View.GONE
             }
             TransferStatus.ERROR -> {
-                binding.tvTransferTitle.text = "Aktarım Sonlandı"
+                binding.tvTransferTitle.text = "Bağlantı Kurulamadı"
                 binding.tvTransferEta.text = progress.message ?: "Bağlantı sonlandı."
                 binding.btnPauseResumeTransfer.visibility = View.GONE
                 binding.btnCancelTransferKeepPartial.visibility = View.GONE
@@ -1021,18 +1106,17 @@ class MainActivity : AppCompatActivity() {
         )
 
         val etInput = view.findViewById<EditText>(R.id.etMessageInput)
-        etInput.hint = "Hedef IP (Doğrudan Köprü: 192.168.49.1)"
-        etInput.setText("192.168.49.1")
+        etInput.hint = "Hedef IP Adresi (Örn: 192.168.49.1 veya 192.168.43.1)"
         view.findViewById<TextView>(R.id.btnCancelTextDialog).setOnClickListener { dialog.dismiss() }
         view.findViewById<TextView>(R.id.btnConfirmTextDialog).setOnClickListener {
             val ip = etInput.text.toString().trim()
             if (ip.isNotEmpty()) {
-                lanDiscoveryManager.addManualFavoritePeer(ip, "Doğrudan Köprü ($ip)", isP2pBridge = ip.startsWith("192.168.49."))
+                lanDiscoveryManager.sendUnicastAnnounce(ip)
                 if (selectedTransferItems.isNotEmpty()) {
                     transferEngine.sendItemsToPeers(
                         items = selectedTransferItems.toList(),
                         targetHostIps = listOf(ip to 53317),
-                        transportLabel = "5 GHz Doğrudan Köprü ($ip)"
+                        transportLabel = "Doğrudan IP ($ip)"
                     )
                 }
             }
@@ -1090,13 +1174,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun showNetworkAndDeviceInfoDialog() {
         val ips = lanDiscoveryManager.getLocalIpAddresses()
-        val ipText = if (ips.isEmpty()) "Wi-Fi Direct Köprüsü (192.168.49.1)" else ips.joinToString(", ")
+        val ipText = if (ips.isEmpty()) "Wi-Fi / Hotspot Bekleniyor" else ips.joinToString(", ")
         val hwBands = wifiDirectManager.getHardwareBandCapabilitySummary()
         val msg = buildString {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
-            appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy TCP Portu: 53317 (16 MB Tampon / 32 MB DMA)")
+            appendLine("• Aktif Wi-Fi / Köprü IP: $ipText")
+            appendLine("• Zero-Copy TCP Portu: 53317 (16 MB Tampon / 4 MB Blok)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1131,22 +1215,15 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Donanım Bant Desteği: $hwBands")
             appendLine("• Aktif IP Adresleri: $ips")
             appendLine()
-            appendLine("Neden Ev Modeminde Hız 45-60 MB/s Civarında Kalır?")
-            appendLine("Ev modemi (AP) üzerinden gönderimde veri [Telefon A -> Modem -> Telefon B] şeklinde iki kez havadan uçar ve kablosuz hız yarıya düşer.")
-            appendLine()
-            append("100+ MB/s Doğrudan Köprü İçin: Alıcı telefonda 'Alım' ekranındaki '5 GHz Doğrudan Köprü Kur' butonuna basın veya listedeki '5 GHz Doğrudan Köprü' cihazını seçin.")
+            appendLine("Modemsiz (Çevrimdışı) 5 GHz Maksimum Hız İçin 2 Yöntem:")
+            appendLine("1) Alım sekmesindeki '5 GHz Doğrudan Köprü Kur' butonuna basın; ekranda çıkan DIRECT-... 5 GHz ağına diğer telefonun Wi-Fi ayarlarından bağlanın.")
+            append("2) Veya telefonlardan birinde 5 GHz Mobil Erişim Noktası (Hotspot) açıp diğer telefonu ona bağlayın; Zeph internet harcamadan doğrudan 5 GHz donanım hızında aktarım yapar.")
         }
         AlertDialog.Builder(this)
             .setTitle("Maksimum Hız & Sorun Giderme")
             .setMessage(msg)
-            .setPositiveButton("5 GHz Doğrudan Köprüyü Başlat") { _: DialogInterface, _: Int ->
-                wifiDirectManager.createDirect5GhzGroupBridge { _, statusMsg ->
-                    runOnUiThread {
-                        Toast.makeText(this, statusMsg, Toast.LENGTH_SHORT).show()
-                    }
-                }
-                wifiDirectManager.discoverPeers()
-                lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+            .setPositiveButton("5 GHz Doğrudan Köprü Kur") { _: DialogInterface, _: Int ->
+                binding.btnCreate5GhzBridge.performClick()
             }
             .setNegativeButton("Kapat", null)
             .show()
@@ -1195,6 +1272,9 @@ class MainActivity : AppCompatActivity() {
         wifiDirectManager.stop()
         lanDiscoveryManager.stop()
         transferEngine.stop()
+        if (!binding.switchKeepServiceNotification.isChecked) {
+            setHardwareServiceRunning(false)
+        }
         super.onDestroy()
     }
 }

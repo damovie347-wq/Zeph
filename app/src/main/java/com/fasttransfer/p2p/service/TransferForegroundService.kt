@@ -18,22 +18,18 @@ import com.fasttransfer.p2p.MainActivity
 import com.fasttransfer.p2p.R
 import com.fasttransfer.p2p.util.CompatibilityHelper
 
-/**
- * HARDWARE LOCK & HIGH-PRIORITY FOREGROUND SERVICE:
- * Keeps CPU awake (PARTIAL_WAKE_LOCK) and Wi-Fi chip in Ultra-Low-Latency / High-Perf mode
- * (WIFI_MODE_FULL_LOW_LATENCY on API 29+, WIFI_MODE_FULL_HIGH_PERF on API 21-28)
- * so screen-off or background transitions never throttle MB/s throughput.
- */
 class TransferForegroundService : Service() {
 
     companion object {
-        const val CHANNEL_ID = "fast_transfer_zero_copy_channel"
+        const val CHANNEL_ID = "zeph_zero_copy_channel"
         const val NOTIFICATION_ID = 53317
         const val ACTION_START_ENGINE = "com.fasttransfer.p2p.action.START_ENGINE"
-        const val ACTION_UPDATE_PROGRESS = "com.fasttransfer.p2p.action.UPDATE_PROGRESS"
         const val ACTION_STOP_ENGINE = "com.fasttransfer.p2p.action.STOP_ENGINE"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_SUBTITLE = "extra_subtitle"
+
+        @Volatile
+        var isRunning: Boolean = false
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -43,6 +39,7 @@ class TransferForegroundService : Service() {
         super.onCreate()
         createNotificationChannelIfNeeded()
         acquireHardwareLocks()
+        isRunning = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -50,19 +47,12 @@ class TransferForegroundService : Service() {
         val action = intent?.action ?: ACTION_START_ENGINE
 
         if (action == ACTION_STOP_ENGINE) {
-            releaseHardwareLocks()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-            stopSelf()
+            stopAndCleanUp()
             return START_NOT_STICKY
         }
 
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "FastTransfer Zero-Copy Motoru Aktif"
-        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "5 GHz / 2.4 GHz Maksimum Hız Hazır"
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Zeph Yüksek Hızlı Aktarım"
+        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Donanım hızlandırma aktif"
         val notification = buildNotification(title, subtitle)
 
         try {
@@ -75,10 +65,26 @@ class TransferForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isRunning = true
         } catch (_: Throwable) {
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    private fun stopAndCleanUp() {
+        isRunning = false
+        releaseHardwareLocks()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Throwable) {
+        }
+        stopSelf()
     }
 
     private fun acquireHardwareLocks() {
@@ -87,10 +93,10 @@ class TransferForegroundService : Service() {
             if (pm != null && wakeLock == null) {
                 wakeLock = pm.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
-                    "FastTransfer::ZeroCopyWakeLock"
+                    "Zeph::ZeroCopyWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(4 * 60 * 60 * 1000L) // Up to 4 hours continuous transfer
+                    acquire(30 * 60 * 1000L)
                 }
             }
         } catch (_: Throwable) {
@@ -100,7 +106,7 @@ class TransferForegroundService : Service() {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             if (wm != null && wifiLock == null) {
                 val lockMode = CompatibilityHelper.getOptimalWifiLockMode()
-                wifiLock = wm.createWifiLock(lockMode, "FastTransfer::ZeroCopyWifiLock").apply {
+                wifiLock = wm.createWifiLock(lockMode, "Zeph::ZeroCopyWifiLock").apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -127,10 +133,10 @@ class TransferForegroundService : Service() {
             val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "FastTransfer Yüksek Hızlı Aktarım",
+                "Zeph Aktarım Bildirimi",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Zero-Copy Wi-Fi Direct ve LAN aktarım durumu"
+                description = "Aktif veri aktarımı sırasında donanım uyanıklığını korur"
                 setShowBadge(false)
             }
             mgr.createNotificationChannel(channel)
@@ -141,25 +147,38 @@ class TransferForegroundService : Service() {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
+        val stopIntent = Intent(this, TransferForegroundService::class.java).apply {
+            action = ACTION_STOP_ENGINE
+        }
+
         val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         } else {
             PendingIntent.FLAG_UPDATE_CURRENT
         }
-        val pendingIntent = PendingIntent.getActivity(this, 0, openIntent, piFlags)
+        val pendingOpen = PendingIntent.getActivity(this, 0, openIntent, piFlags)
+        val pendingStop = PendingIntent.getService(this, 1, stopIntent, piFlags)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_wifi_receive)
             .setContentTitle(title)
             .setContentText(subtitle)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
+            .setContentIntent(pendingOpen)
+            .setOngoing(false)
+            .setAutoCancel(true)
             .setOnlyAlertOnce(true)
+            .addAction(R.drawable.ic_close_x, "Bildirimi Kapat", pendingStop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopAndCleanUp()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        isRunning = false
         releaseHardwareLocks()
         super.onDestroy()
     }

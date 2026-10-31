@@ -749,6 +749,29 @@
                             android:checked="false"
                             android:text="Gelen Dosyaları Onay Sormadan Otomatik Kabul Et"
                             android:textColor="@color/text_primary_white" />
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switchKeepServiceNotification"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:checked="false"
+                            android:text="Üst Çubukta Sürekli 'Zero-Copy Aktif' Bildirimi Göster"
+                            android:textColor="@color/text_primary_white" />
+
+                        <TextView
+                            android:id="@+id/btnStopServiceNotification"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp"
+                            android:layout_gravity="end"
+                            android:layout_marginTop="6dp"
+                            android:background="@drawable/bg_button_outline_pill"
+                            android:gravity="center"
+                            android:paddingHorizontal="16dp"
+                            android:text="Üstteki Bildirimi Şimdi Kapat"
+                            android:textColor="@color/accent_cyan_text"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
                     </LinearLayout>
 
                     <!-- Zero-Copy & %5 Partial Preservation Info + Clear History -->

@@ -12,6 +12,8 @@ import android.os.Bundle
 import android.os.StrictMode
 import android.text.Editable
 import android.text.TextWatcher
+import android.transition.AutoTransition
+import android.transition.TransitionManager
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -24,6 +26,7 @@ import android.widget.PopupWindow
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -78,7 +81,9 @@ class MainActivity : AppCompatActivity() {
     private var deviceAlias: String = "Kind Carrot"
     private var lastSavedOrPartialFilePath: String? = null
     private var pendingPeerForDirectTransfer: PeerDevice? = null
-    private var activeConsentDialog: Dialog? = null
+    private var currentIncomingRequest: IncomingTransferRequest? = null
+    private var isAdvancedStatsExpanded: Boolean = false
+    private var isTransferCurrentlyFinishedOrStopped: Boolean = false
 
     private var skeletonAnimationJob: Job? = null
 
@@ -93,6 +98,7 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
+            val newItems = mutableListOf<TransferItem>()
             for (uri in uris) {
                 try {
                     contentResolver.takePersistableUriPermission(
@@ -102,10 +108,10 @@ class MainActivity : AppCompatActivity() {
                 } catch (_: Throwable) {
                 }
                 StorageHelper.buildTransferItemFromUri(this, uri)?.let { item ->
-                    selectedTransferItems.add(item)
+                    newItems.add(item)
                 }
             }
-            refreshSelectionUi()
+            addUniqueTransferItems(newItems)
         }
     }
 
@@ -113,12 +119,13 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.GetMultipleContents()
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
+            val newItems = mutableListOf<TransferItem>()
             for (uri in uris) {
                 StorageHelper.buildTransferItemFromUri(this, uri)?.let { item ->
-                    selectedTransferItems.add(item)
+                    newItems.add(item)
                 }
             }
-            refreshSelectionUi()
+            addUniqueTransferItems(newItems)
         }
     }
 
@@ -143,13 +150,7 @@ class MainActivity : AppCompatActivity() {
                             Toast.LENGTH_SHORT
                         ).show()
                     } else {
-                        selectedTransferItems.addAll(folderItems)
-                        refreshSelectionUi()
-                        Toast.makeText(
-                            this@MainActivity,
-                            "${folderItems.size} dosya klasörden sıfır önbellekle eklendi.",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        addUniqueTransferItems(folderItems)
                     }
                 }
             }
@@ -170,7 +171,9 @@ class MainActivity : AppCompatActivity() {
         setupBottomNavigation()
         setupReceiveTabActions()
         setupSendTabActions()
+        setupIncomingAndSessionOverlays()
         setupSettingsTabActions()
+        setupBackNavigationHandler()
         setupEngines()
 
         requestNecessaryPermissionsIfNeeded()
@@ -183,6 +186,31 @@ class MainActivity : AppCompatActivity() {
         handleIncomingShareIntent(intent)
     }
 
+    /**
+     * Deduplicates files by normalized name + exact byte size (and URI) so picking the same video
+     * in the app and then sharing it from File Manager / Gallery NEVER adds the same file twice!
+     */
+    private fun addUniqueTransferItems(incoming: List<TransferItem>) {
+        var addedCount = 0
+        var skippedDuplicates = 0
+        for (candidate in incoming) {
+            val alreadyExists = selectedTransferItems.any { existing ->
+                (existing.name.equals(candidate.name, ignoreCase = true) && existing.sizeBytes == candidate.sizeBytes) ||
+                    (existing.uri != null && existing.uri == candidate.uri)
+            }
+            if (alreadyExists) {
+                skippedDuplicates++
+            } else {
+                selectedTransferItems.add(candidate)
+                addedCount++
+            }
+        }
+        refreshSelectionUi()
+        if (skippedDuplicates > 0 && addedCount == 0) {
+            Toast.makeText(this, "Bu dosya zaten seçiminizde mevcut.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun loadPreferences() {
         val prefs = getSharedPreferences("fast_transfer_prefs", Context.MODE_PRIVATE)
         deviceAlias = prefs.getString("device_alias", "Kind Carrot") ?: "Kind Carrot"
@@ -190,7 +218,6 @@ class MainActivity : AppCompatActivity() {
         val autoAccept = prefs.getBoolean("auto_accept_incoming", false)
         val keepNotif = prefs.getBoolean("keep_service_notif", false)
         favoriteIps.clear()
-        // Filter out any old ghost 192.168.49.1 entry that was saved in earlier versions
         for (ip in savedFavs) {
             if (ip != "192.168.49.1") {
                 favoriteIps.add(ip)
@@ -241,10 +268,10 @@ class MainActivity : AppCompatActivity() {
         binding.radarPulseReceive.setThemeColor(Color.parseColor("#6CD4FF"))
 
         lifecycleScope.launch {
-            delay(900L)
+            delay(850L)
             binding.splashOverlay.animate()
                 .alpha(0f)
-                .setDuration(280L)
+                .setDuration(260L)
                 .withEndAction {
                     binding.splashOverlay.visibility = View.GONE
                 }
@@ -304,45 +331,192 @@ class MainActivity : AppCompatActivity() {
         binding.btnReceiveInfo.setOnClickListener {
             showNetworkAndDeviceInfoDialog()
         }
-        binding.btnCreate5GhzBridge.setOnClickListener {
-            binding.tvCreate5GhzBridge.text = "5 GHz Doğrudan Köprü Hazırlanıyor..."
-            wifiDirectManager.createDirect5GhzGroupBridge { success, msg, ssid, pass ->
-                runOnUiThread {
-                    binding.tvCreate5GhzBridge.text = if (success) {
-                        "5 GHz Doğrudan Köprü Aktif (192.168.49.1)"
-                    } else {
-                        "5 GHz Doğrudan Köprü Kur (Modemsiz Maks Hız)"
-                    }
-                    binding.tvReceiveBandStatus.text = msg
-                    lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-
-                    if (success && !ssid.isNullOrEmpty()) {
-                        val infoText = buildString {
-                            appendLine("5 GHz Modemsiz Doğrudan Köprü Kuruldu!")
-                            appendLine()
-                            appendLine("• Wi-Fi Ağ Adı (SSID): $ssid")
-                            appendLine("• Şifre: ${pass ?: "zeph12345"}")
-                            appendLine("• Köprü IP Adresi: 192.168.49.1")
-                            appendLine()
-                            append("Gönderici telefondan Çevrimdışı (Modemsiz) bağlanmak için:")
-                            appendLine()
-                            appendLine("1) Gönderici telefonda Yakınınızdaki Cihazlar listesindeki Wi-Fi Direct kaydına dokunun, VEYA")
-                            append("2) Gönderici telefonun Wi-Fi ayarlarından '$ssid' ağına bağlanın; cihazlar 192.168.49.1 üzerinden otomatik eşleşip maksimum 5 GHz hızda aktarım yapacaktır.")
-                        }
-                        AlertDialog.Builder(this)
-                            .setTitle("5 GHz Doğrudan Köprü Hazır")
-                            .setMessage(infoText)
-                            .setPositiveButton("Tamam", null)
-                            .show()
-                    } else {
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }
         binding.btnReceiveViaLink.setOnClickListener {
             showWebLinkInfoDialog()
         }
+    }
+
+    /**
+     * Sets up the exact Full-Screen Incoming Request, Options, and Transfer Session overlays
+     * with smooth TransitionManager animations matching Video 2 (00:09 - 00:22).
+     */
+    private fun setupIncomingAndSessionOverlays() {
+        // Starts collapsed just like Video 2 at 00:14, expands smoothly when user taps "Gelişmiş"
+        isAdvancedStatsExpanded = false
+        binding.layoutAdvancedStats.visibility = View.GONE
+        binding.tvToggleAdvancedLabel.text = "Gelişmiş"
+
+        binding.btnOverlayVerify.setOnClickListener {
+            val req = currentIncomingRequest ?: return@setOnClickListener
+            AlertDialog.Builder(this)
+                .setTitle("Bağlantı Doğrulaması")
+                .setMessage("Gönderici: ${req.senderAlias} (${req.senderModel})\nIP: ${req.senderIp}\nKanal: ${req.transportLabel}")
+                .setPositiveButton("Tamam", null)
+                .show()
+        }
+
+        binding.btnOverlayOptions.setOnClickListener {
+            binding.overlayIncomingOptions.alpha = 0f
+            binding.overlayIncomingOptions.translationX = 80f
+            binding.overlayIncomingOptions.visibility = View.VISIBLE
+            binding.overlayIncomingOptions.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setDuration(220L)
+                .start()
+        }
+
+        binding.btnCloseIncomingOptions.setOnClickListener {
+            binding.overlayIncomingOptions.animate()
+                .alpha(0f)
+                .translationX(80f)
+                .setDuration(180L)
+                .withEndAction {
+                    binding.overlayIncomingOptions.visibility = View.GONE
+                }
+                .start()
+        }
+
+        binding.btnOverlayDecline.setOnClickListener {
+            val req = currentIncomingRequest
+            currentIncomingRequest = null
+            hideOverlaySmoothly(binding.overlayIncomingOptions)
+            hideOverlaySmoothly(binding.overlayIncomingRequest)
+            req?.onDecision?.invoke(false)
+        }
+
+        binding.btnOverlayAccept.setOnClickListener {
+            val req = currentIncomingRequest
+            currentIncomingRequest = null
+            binding.overlayIncomingOptions.visibility = View.GONE
+            hideOverlaySmoothly(binding.overlayIncomingRequest)
+            showTransferSessionOverlay(
+                isSending = false,
+                initialFileName = req?.firstFileName ?: "Dosya",
+                initialFileSize = req?.firstFileSize ?: 0L
+            )
+            req?.onDecision?.invoke(true)
+        }
+
+        // Smooth animated expand/collapse for "ⓘ Gelişmiş" / "ⓘ Gizle" (Video 2 00:15 - 00:22)
+        binding.btnToggleAdvancedStats.setOnClickListener {
+            val transition = AutoTransition().apply {
+                duration = 220L
+            }
+            TransitionManager.beginDelayedTransition(binding.overlayTransferSession, transition)
+            isAdvancedStatsExpanded = !isAdvancedStatsExpanded
+            binding.layoutAdvancedStats.visibility = if (isAdvancedStatsExpanded) View.VISIBLE else View.GONE
+            binding.tvToggleAdvancedLabel.text = if (isAdvancedStatsExpanded) "Gizle" else "Gelişmiş"
+        }
+
+        binding.btnPauseResumeTransfer.setOnClickListener {
+            val paused = transferEngine.togglePauseResume()
+            binding.btnPauseResumeTransfer.text = if (paused) "Devam Et" else "Duraklat"
+        }
+
+        binding.btnCancelTransferKeepPartial.setOnClickListener {
+            if (isTransferCurrentlyFinishedOrStopped) {
+                hideOverlaySmoothly(binding.overlayTransferSession)
+                return@setOnClickListener
+            }
+            transferEngine.cancelAndPreservePartialFile()
+            isTransferCurrentlyFinishedOrStopped = true
+            binding.btnPauseResumeTransfer.visibility = View.GONE
+            binding.tvCancelOrDoneLabel.text = "Kapat"
+            binding.tvTransferTitle.text = "Kısmi Dosya Korundu"
+            if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
+                binding.btnOpenPartialFile.visibility = View.VISIBLE
+            }
+            Toast.makeText(
+                this,
+                "Aktarım durduruldu! O ana kadar inen kısmi dosya korundu.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        binding.btnDismissTransferCard.setOnClickListener {
+            transferEngine.cancelAndPreservePartialFile()
+            isTransferCurrentlyFinishedOrStopped = true
+            hideOverlaySmoothly(binding.overlayTransferSession)
+        }
+
+        binding.btnOpenPartialFile.setOnClickListener {
+            val path = lastSavedOrPartialFilePath
+            if (!path.isNullOrEmpty()) {
+                openFileInExternalPlayer(File(path))
+            } else {
+                showTransferHistoryDialog()
+            }
+        }
+    }
+
+    private fun showTransferSessionOverlay(isSending: Boolean, initialFileName: String, initialFileSize: Long) {
+        isTransferCurrentlyFinishedOrStopped = false
+        binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
+        binding.tvSessionSubPath.text = if (isSending) {
+            "Zero-Copy Doğrudan Akış (Maksimum Donanım Hızı)"
+        } else {
+            "Hedef klasör: /storage/emulated/0/Download"
+        }
+        binding.tvSessionItemTitle.text = "$initialFileName (${StorageHelper.formatFileSize(initialFileSize)})"
+        binding.progressSessionItem.progress = 0
+        binding.progressBarTransfer.progress = 0
+        binding.tvTransferTitle.text = "Toplam ilerleme (--:--)"
+        binding.btnPauseResumeTransfer.text = "Duraklat"
+        binding.btnPauseResumeTransfer.visibility = View.VISIBLE
+        binding.tvCancelOrDoneLabel.text = "İptal et"
+        binding.btnOpenPartialFile.visibility = View.GONE
+
+        if (binding.overlayTransferSession.visibility != View.VISIBLE) {
+            binding.overlayTransferSession.alpha = 0f
+            binding.overlayTransferSession.translationY = 48f
+            binding.overlayTransferSession.visibility = View.VISIBLE
+            binding.overlayTransferSession.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(240L)
+                .start()
+        }
+    }
+
+    private fun hideOverlaySmoothly(view: View) {
+        if (view.visibility != View.VISIBLE) return
+        view.animate()
+            .alpha(0f)
+            .translationY(36f)
+            .setDuration(180L)
+            .withEndAction {
+                view.visibility = View.GONE
+                view.translationY = 0f
+            }
+            .start()
+    }
+
+    private fun setupBackNavigationHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    binding.overlayIncomingOptions.visibility == View.VISIBLE -> {
+                        binding.btnCloseIncomingOptions.performClick()
+                    }
+                    binding.overlayIncomingRequest.visibility == View.VISIBLE -> {
+                        binding.btnOverlayDecline.performClick()
+                    }
+                    binding.overlayTransferSession.visibility == View.VISIBLE -> {
+                        if (isTransferCurrentlyFinishedOrStopped) {
+                            hideOverlaySmoothly(binding.overlayTransferSession)
+                        } else {
+                            binding.btnCancelTransferKeepPartial.performClick()
+                        }
+                    }
+                    else -> {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            }
+        })
     }
 
     private fun setupSendTabActions() {
@@ -386,7 +560,7 @@ class MainActivity : AppCompatActivity() {
             it.animate().rotationBy(360f).setDuration(450L).start()
             wifiDirectManager.discoverPeers()
             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-            Toast.makeText(this, "5 GHz Doğrudan Köprü & LAN Taraması Yenilendi", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Yakındaki Cihaz Taraması Yenilendi", Toast.LENGTH_SHORT).show()
         }
         binding.btnManualScanIp.setOnClickListener {
             showManualIpConnectDialog()
@@ -400,45 +574,6 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnTroubleshoot.setOnClickListener {
             showTroubleshootDialog()
-        }
-
-        binding.btnPauseResumeTransfer.setOnClickListener {
-            val paused = transferEngine.togglePauseResume()
-            binding.btnPauseResumeTransfer.text = if (paused) "Devam Et" else "Duraklat"
-        }
-
-        binding.btnCancelTransferKeepPartial.setOnClickListener {
-            transferEngine.cancelAndPreservePartialFile()
-            binding.btnPauseResumeTransfer.visibility = View.GONE
-            binding.btnCancelTransferKeepPartial.visibility = View.GONE
-            binding.tvTransferEta.text = "Durduruldu • Kısmi dosya korundu ve mühürlendi!"
-            if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
-                binding.btnOpenPartialFile.visibility = View.VISIBLE
-            }
-            Toast.makeText(
-                this,
-                "İşlem anında durduruldu! İnen kısmi dosya korundu.",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        binding.btnDismissTransferCard.setOnClickListener {
-            transferEngine.cancelAndPreservePartialFile()
-            activeConsentDialog?.dismiss()
-            activeConsentDialog = null
-            binding.cardActiveTransfer.visibility = View.GONE
-            binding.btnPauseResumeTransfer.text = "Duraklat"
-            binding.btnPauseResumeTransfer.visibility = View.VISIBLE
-            binding.btnCancelTransferKeepPartial.visibility = View.VISIBLE
-        }
-
-        binding.btnOpenPartialFile.setOnClickListener {
-            val path = lastSavedOrPartialFilePath
-            if (!path.isNullOrEmpty()) {
-                openFileInExternalPlayer(File(path))
-            } else {
-                showTransferHistoryDialog()
-            }
         }
     }
 
@@ -455,7 +590,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.switchPrefer5Ghz.setOnCheckedChangeListener { _, isChecked ->
-            wifiDirectManager.preferHighBand5Ghz = isChecked
+            wifiDirectManager.preferHighBand = isChecked
         }
 
         binding.switchAutoAccept.setOnCheckedChangeListener { _, isChecked ->
@@ -468,43 +603,57 @@ class MainActivity : AppCompatActivity() {
         binding.switchKeepServiceNotification.setOnCheckedChangeListener { _, isChecked ->
             savePreferences()
             setHardwareServiceRunning(isChecked)
-            val msg = if (isChecked) {
-                "Üst çubuk bildirimi aktif edildi."
-            } else {
-                "Üst çubuk bildirimi kapatıldı (Yalnızca aktarım sırasında çalışır)."
+        }
+
+        binding.btnDisconnectBridgeNow.setOnClickListener {
+            wifiDirectManager.cleanupStaleGroups {
+                runOnUiThread {
+                    Toast.makeText(this, "Açık kalan tüm Wi-Fi Direct / Hotspot grupları kapatıldı.", Toast.LENGTH_SHORT).show()
+                }
             }
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
 
         binding.btnStopServiceNotification.setOnClickListener {
             binding.switchKeepServiceNotification.isChecked = false
             savePreferences()
             setHardwareServiceRunning(false)
-            Toast.makeText(this, "Üstteki bildirim ve arka plan servisi kapatıldı.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Üst çubuk bildirimi kapatıldı.", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnClearHistorySettings.setOnClickListener {
             transferEngine.clearHistory()
             lastSavedOrPartialFilePath = null
-            binding.cardActiveTransfer.visibility = View.GONE
-            Toast.makeText(this, "Aktarım geçmişi ve ekran kartı temizlendi.", Toast.LENGTH_SHORT).show()
+            hideOverlaySmoothly(binding.overlayTransferSession)
+            Toast.makeText(this, "Aktarım geçmişi temizlendi.", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun setupEngines() {
-        // Only show persistent notification on startup if user explicitly enabled it in Settings!
         if (binding.switchKeepServiceNotification.isChecked) {
             setHardwareServiceRunning(true)
         } else {
             setHardwareServiceRunning(false)
         }
 
+        lanDiscoveryManager = LanDiscoveryManager(
+            context = this,
+            getLocalAlias = { deviceAlias },
+            onLanPeersChanged = { peers ->
+                runOnUiThread {
+                    lanPeers.clear()
+                    lanPeers.addAll(peers)
+                    mergeAndRenderDiscoveredPeers()
+                }
+            }
+        )
+
         transferEngine = ZeroCopyTransferEngine(
             context = this,
             getLocalAlias = { deviceAlias },
+            getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceBrand() },
             onIncomingConsentRequest = { req ->
                 runOnUiThread {
-                    showIncomingConsentDialog(req)
+                    showIncomingConsentOverlay(req)
                 }
             },
             onProgressUpdate = { progress ->
@@ -539,12 +688,9 @@ class MainActivity : AppCompatActivity() {
                     mergeAndRenderDiscoveredPeers()
                 }
             },
-            onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel, ssid, _ ->
+            onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
-                    val ssidTag = if (!ssid.isNullOrEmpty()) " • $ssid" else ""
-                    binding.tvReceiveBandStatus.text = "$bandLabel$ssidTag"
                     if (!isGroupOwner) {
-                        // We are the P2P Client connected to the other phone's 5 GHz Group Owner bridge!
                         lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                     } else {
                         lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
@@ -567,32 +713,15 @@ class MainActivity : AppCompatActivity() {
                                     targetHostIps = listOf(p2pClient.ipAddress to 53317),
                                     transportLabel = bandLabel
                                 )
-                            } else {
-                                binding.tvTransferEta.text = "Köprü kuruldu! Karşı cihazın bağlanması bekleniyor..."
                             }
                         }
                     }
                 }
             },
-            onStatusLog = { statusText ->
-                runOnUiThread {
-                    binding.tvReceiveBandStatus.text = "$statusText • Port 53317"
-                }
+            onStatusLog = { _ ->
             }
         )
         wifiDirectManager.start()
-
-        lanDiscoveryManager = LanDiscoveryManager(
-            context = this,
-            getLocalAlias = { deviceAlias },
-            onLanPeersChanged = { peers ->
-                runOnUiThread {
-                    lanPeers.clear()
-                    lanPeers.addAll(peers)
-                    mergeAndRenderDiscoveredPeers()
-                }
-            }
-        )
         lanDiscoveryManager.start()
 
         for (favIp in favoriteIps) {
@@ -600,62 +729,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showIncomingConsentDialog(req: IncomingTransferRequest) {
-        activeConsentDialog?.dismiss()
-        val dialog = Dialog(this)
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        dialog.setCancelable(false)
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_incoming_request, null)
-        dialog.setContentView(view)
-        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        dialog.window?.setLayout(
-            (resources.displayMetrics.widthPixels * 0.90).toInt(),
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-
-        val tvSender = view.findViewById<TextView>(R.id.tvIncomingSenderName)
-        val tvSub = view.findViewById<TextView>(R.id.tvIncomingSubHeader)
-        val tvSummary = view.findViewById<TextView>(R.id.tvIncomingSummary)
-        val tvFiles = view.findViewById<TextView>(R.id.tvIncomingFileList)
-        val btnDecline = view.findViewById<TextView>(R.id.btnDeclineIncoming)
-        val btnAccept = view.findViewById<TextView>(R.id.btnAcceptIncoming)
-
-        tvSender.text = req.senderAlias
-        tvSub.text = "Size dosya göndermek istiyor (${req.transportLabel})"
-        tvSummary.text = "Dosya Sayısı: ${req.fileCount} • Toplam: ${StorageHelper.formatFileSize(req.totalBytes)}"
-        tvFiles.text = req.filePreviewLines
-
-        btnDecline.setOnClickListener {
-            dialog.dismiss()
-            activeConsentDialog = null
-            req.onDecision(false)
-            Toast.makeText(this, "Gelen dosya isteği reddedildi.", Toast.LENGTH_SHORT).show()
+    /**
+     * Shows the exact Full-Screen Incoming Request Overlay from Video 2 (00:09 - 00:13).
+     */
+    private fun showIncomingConsentOverlay(req: IncomingTransferRequest) {
+        currentIncomingRequest = req
+        binding.tvOverlaySenderAlias.text = req.senderAlias
+        binding.tvOverlaySenderModelBadge.text = req.senderModel
+        binding.tvOverlayWantToSend.text = if (req.fileCount > 1) {
+            "sana ${req.fileCount} dosya göndermek istiyor"
+        } else {
+            "sana bir dosya göndermek istiyor"
         }
 
-        btnAccept.setOnClickListener {
-            dialog.dismiss()
-            activeConsentDialog = null
-            binding.cardActiveTransfer.visibility = View.VISIBLE
-            binding.btnPauseResumeTransfer.visibility = View.VISIBLE
-            binding.btnCancelTransferKeepPartial.visibility = View.VISIBLE
-            req.onDecision(true)
-        }
+        binding.tvOptionsFileName.text = req.firstFileName
+        binding.tvOptionsFileSize.text = "Değiştirilmemiş - ${StorageHelper.formatFileSize(req.firstFileSize)}"
 
-        activeConsentDialog = dialog
-        dialog.show()
+        binding.overlayIncomingOptions.visibility = View.GONE
+        binding.overlayIncomingRequest.alpha = 0f
+        binding.overlayIncomingRequest.translationY = 48f
+        binding.overlayIncomingRequest.visibility = View.VISIBLE
+        binding.overlayIncomingRequest.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(240L)
+            .start()
     }
 
     private fun handleIncomingShareIntent(intent: Intent?) {
         val sharedItems = StorageHelper.extractTransferItemsFromIntent(this, intent)
         if (sharedItems.isNotEmpty()) {
-            selectedTransferItems.addAll(sharedItems)
-            refreshSelectionUi()
+            addUniqueTransferItems(sharedItems)
             switchTab(1)
-            Toast.makeText(
-                this,
-                "${sharedItems.size} dosya önbelleğe kopyalanmadan (Zero-Cache) doğrudan akışa hazır!",
-                Toast.LENGTH_SHORT
-            ).show()
         }
     }
 
@@ -682,11 +787,11 @@ class MainActivity : AppCompatActivity() {
         val combined = mutableListOf<PeerDevice>()
         combined.addAll(lanPeers)
         for (p2p in p2pPeers) {
-            if (combined.none { it.id == p2p.id }) {
+            // Only add Wi-Fi Direct peer if not already connected via IP
+            if (combined.none { it.alias.equals(p2p.alias, ignoreCase = true) }) {
                 combined.add(p2p)
             }
         }
-        combined.sortWith(compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias })
 
         if (combined.isEmpty()) {
             binding.cardScanningPlaceholder.visibility = View.VISIBLE
@@ -713,13 +818,20 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val first = selectedTransferItems.first()
+        showTransferSessionOverlay(
+            isSending = true,
+            initialFileName = first.name,
+            initialFileSize = first.sizeBytes
+        )
+
         if (currentSendMode == SendMode.MULTI_RECIPIENT) {
             val allTargets = lanPeers.mapNotNull { p -> p.ipAddress?.let { it to p.port } }.distinct()
             if (allTargets.isNotEmpty()) {
                 transferEngine.sendItemsToPeers(
                     items = selectedTransferItems.toList(),
                     targetHostIps = allTargets,
-                    transportLabel = "Çoklu Alıcı Zero-Copy (${allTargets.size} Cihaz)"
+                    transportLabel = "Çoklu Alıcı (${allTargets.size} Cihaz)"
                 )
                 return
             }
@@ -736,15 +848,12 @@ class MainActivity : AppCompatActivity() {
 
         if (!peer.macAddress.isNullOrBlank()) {
             pendingPeerForDirectTransfer = peer
-            binding.cardActiveTransfer.visibility = View.VISIBLE
-            binding.tvTransferTitle.text = "5 GHz Doğrudan Köprü Kuruluyor..."
-            binding.tvTransferFileName.text = peer.alias
-            binding.tvTransferEta.text = "Karşı ekranda çıkan Wi-Fi Direct davetini onaylayın..."
+            binding.tvTransferTitle.text = "Doğrudan Köprü Kuruluyor..."
+            binding.tvTransferEta.text = "Karşı cihazda çıkan bağlantı onayını kabul edin..."
             wifiDirectManager.connectWithCascadingBandFallback(peer.macAddress) { success, msg ->
                 runOnUiThread {
                     if (!success) {
                         binding.tvTransferEta.text = msg
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -752,17 +861,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderTransferProgress(progress: TransferProgress) {
-        binding.cardActiveTransfer.visibility = View.VISIBLE
-        binding.tvTransferTitle.text = "Zero-Copy (${progress.transportLabel})"
-        binding.tvTransferFileName.text = progress.fileName
+        if (binding.overlayTransferSession.visibility != View.VISIBLE && progress.status != TransferStatus.IDLE) {
+            showTransferSessionOverlay(
+                isSending = progress.isSending,
+                initialFileName = progress.fileName,
+                initialFileSize = progress.totalBytes
+            )
+        }
+
+        binding.tvSessionMainTitle.text = if (progress.isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
+        binding.tvSessionItemTitle.text = "${progress.fileName} (${StorageHelper.formatFileSize(progress.totalBytes)})"
+        binding.progressSessionItem.progress = progress.progressPercent
         binding.progressBarTransfer.progress = progress.progressPercent
 
         val speedFormat = DecimalFormat("0.0")
-        binding.tvTransferSpeedMbps.text = "${speedFormat.format(progress.speedMbps)} MB/s"
-
         val transferredStr = StorageHelper.formatFileSize(progress.bytesTransferred)
         val totalStr = StorageHelper.formatFileSize(progress.totalBytes)
-        binding.tvTransferBytesAndPercent.text = "%${progress.progressPercent} ($transferredStr / $totalStr)"
+
+        binding.tvAdvancedFilesCount.text = "Dosyalar: ${progress.fileIndex} / ${progress.totalFiles}"
+        binding.tvTransferBytesAndPercent.text = "Boyut: $transferredStr / $totalStr"
+        binding.tvTransferSpeedMbps.text = "Hız: ${speedFormat.format(progress.speedMbps)} MB/s"
 
         if (!progress.savedFilePath.isNullOrEmpty()) {
             lastSavedOrPartialFilePath = progress.savedFilePath
@@ -770,85 +888,90 @@ class MainActivity : AppCompatActivity() {
 
         when (progress.status) {
             TransferStatus.CONNECTING -> {
-                binding.tvTransferEta.text = progress.message ?: "Bağlanıyor..."
+                binding.tvTransferTitle.text = "Bağlanıyor..."
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.VISIBLE
-                binding.btnOpenPartialFile.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "İptal et"
             }
             TransferStatus.WAITING_APPROVAL -> {
                 binding.tvTransferTitle.text = "Karşı Cihazın Onayı Bekleniyor..."
-                binding.tvTransferEta.text = progress.message ?: "Alıcı cihazda 'Kabul Et' onayı bekleniyor..."
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.VISIBLE
-                binding.btnOpenPartialFile.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "İptal et"
             }
             TransferStatus.TRANSFERRING -> {
-                binding.tvTransferEta.text = "Kalan Süre: ${formatEta(progress.etaSeconds)}"
+                isTransferCurrentlyFinishedOrStopped = false
+                binding.tvTransferTitle.text = "Toplam ilerleme (${formatClockEta(progress.etaSeconds)})"
+                binding.tvTransferEta.text = ""
                 binding.btnPauseResumeTransfer.visibility = View.VISIBLE
-                binding.btnCancelTransferKeepPartial.visibility = View.VISIBLE
+                binding.tvCancelOrDoneLabel.text = "İptal et"
                 binding.btnOpenPartialFile.visibility = View.GONE
             }
             TransferStatus.PAUSED -> {
-                binding.tvTransferEta.text = "Duraklatıldı (Kısmi veri koruma altında)"
+                binding.tvTransferTitle.text = "Toplam ilerleme (Duraklatıldı)"
                 if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
                 }
             }
             TransferStatus.PARTIAL_PRESERVED -> {
-                binding.tvTransferTitle.text = "Kısmi Dosya Korundu (Mühürlendi)"
-                binding.tvTransferEta.text = progress.message ?: "Kısmi dosya korundu ve anında açılabilir!"
+                isTransferCurrentlyFinishedOrStopped = true
+                binding.tvTransferTitle.text = "Kısmi Dosya Korundu (%${progress.progressPercent})"
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "Kapat"
                 if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
                     binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
                 }
             }
             TransferStatus.COMPLETED -> {
-                binding.tvTransferTitle.text = "Aktarım Tamamlandı"
-                binding.tvTransferEta.text = progress.message ?: "Aktarım Tamamlandı"
+                isTransferCurrentlyFinishedOrStopped = true
+                binding.progressSessionItem.progress = 100
+                binding.progressBarTransfer.progress = 100
+                binding.tvTransferTitle.text = "Tamamlandı (0:00)"
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "Kapat"
                 if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
                     binding.btnOpenPartialFile.text = "Dosyayı Aç / Oynat"
                 }
-                if (currentSendMode == SendMode.SINGLE_RECIPIENT) {
+                if (progress.isSending && currentSendMode == SendMode.SINGLE_RECIPIENT) {
                     selectedTransferItems.clear()
                     refreshSelectionUi()
                 }
             }
             TransferStatus.REJECTED -> {
+                isTransferCurrentlyFinishedOrStopped = true
                 binding.tvTransferTitle.text = "İstek Reddedildi"
-                binding.tvTransferEta.text = progress.message ?: "Karşı cihaz dosya isteğini reddetti."
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.GONE
-                binding.btnOpenPartialFile.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "Kapat"
             }
             TransferStatus.ERROR -> {
+                isTransferCurrentlyFinishedOrStopped = true
                 binding.tvTransferTitle.text = "Bağlantı Kurulamadı"
-                binding.tvTransferEta.text = progress.message ?: "Bağlantı sonlandı."
+                binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
-                binding.btnCancelTransferKeepPartial.visibility = View.GONE
+                binding.tvCancelOrDoneLabel.text = "Kapat"
             }
             TransferStatus.IDLE -> {
-                binding.cardActiveTransfer.visibility = View.GONE
+                hideOverlaySmoothly(binding.overlayTransferSession)
             }
         }
     }
 
-    private fun formatEta(seconds: Long): String {
-        if (seconds <= 0L) return "< 1 sn"
+    private fun formatClockEta(seconds: Long): String {
+        if (seconds <= 0L) return "0:01"
         val mins = seconds / 60L
         val secs = seconds % 60L
-        return if (mins > 0L) "${mins} dk ${secs} sn" else "${secs} sn"
+        return String.format("%d:%02d", mins, secs)
     }
 
     private fun handleClipboardPasteSelection() {
         val clipItem = StorageHelper.readClipboardAsTransferItem(this)
         if (clipItem != null) {
-            selectedTransferItems.add(clipItem)
-            refreshSelectionUi()
+            addUniqueTransferItems(listOf(clipItem))
             Toast.makeText(this, "Panodaki içerik eklendi: ${clipItem.name}", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "Panoda kopyalanmış metin veya dosya bulunamadı.", Toast.LENGTH_SHORT).show()
@@ -875,8 +998,7 @@ class MainActivity : AppCompatActivity() {
             val text = etInput.text.toString()
             if (text.isNotEmpty()) {
                 val item = StorageHelper.buildTransferItemFromText(text)
-                selectedTransferItems.add(item)
-                refreshSelectionUi()
+                addUniqueTransferItems(listOf(item))
             }
             dialog.dismiss()
         }
@@ -900,7 +1022,6 @@ class MainActivity : AppCompatActivity() {
         apkAdapter = ApkListAdapter(
             onSingleAppSelected = { appItem ->
                 addApkAppToSelection(appItem)
-                refreshSelectionUi()
                 dialog.dismiss()
             },
             onMultiSelectionChanged = { selectedList ->
@@ -932,7 +1053,6 @@ class MainActivity : AppCompatActivity() {
             for (app in chosen) {
                 addApkAppToSelection(app)
             }
-            refreshSelectionUi()
             dialog.dismiss()
         }
 
@@ -952,16 +1072,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun addApkAppToSelection(app: ApkAppItem) {
         val cleanFileName = StorageHelper.sanitizeFileName("${app.appName}_v${app.versionName}.apk")
-        selectedTransferItems.add(
-            TransferItem(
-                id = UUID.randomUUID().toString(),
-                name = cleanFileName,
-                sizeBytes = app.sizeBytes,
-                mimeType = "application/vnd.android.package-archive",
-                uri = Uri.fromFile(app.apkFile),
-                directFile = app.apkFile
-            )
+        val item = TransferItem(
+            id = UUID.randomUUID().toString(),
+            name = cleanFileName,
+            sizeBytes = app.sizeBytes,
+            mimeType = "application/vnd.android.package-archive",
+            uri = Uri.fromFile(app.apkFile),
+            directFile = app.apkFile
         )
+        addUniqueTransferItems(listOf(item))
     }
 
     private fun showAddSelectionBottomSheet() {
@@ -1017,7 +1136,7 @@ class MainActivity : AppCompatActivity() {
             if (favoriteIps.isEmpty()) {
                 tvStatus.text = getString(R.string.dialog_favorites_empty)
             } else {
-                tvStatus.text = favoriteIps.joinToString("\n") { "• $it (Port 53317)" }
+                tvStatus.text = favoriteIps.joinToString(10.toChar().toString()) { "• $it (Port 53317)" }
             }
         }
         updateFavText()
@@ -1106,13 +1225,15 @@ class MainActivity : AppCompatActivity() {
         )
 
         val etInput = view.findViewById<EditText>(R.id.etMessageInput)
-        etInput.hint = "Hedef IP Adresi (Örn: 192.168.49.1 veya 192.168.43.1)"
+        etInput.hint = "Hedef IP Adresi (Örn: 192.168.1.92)"
         view.findViewById<TextView>(R.id.btnCancelTextDialog).setOnClickListener { dialog.dismiss() }
         view.findViewById<TextView>(R.id.btnConfirmTextDialog).setOnClickListener {
             val ip = etInput.text.toString().trim()
             if (ip.isNotEmpty()) {
                 lanDiscoveryManager.sendUnicastAnnounce(ip)
                 if (selectedTransferItems.isNotEmpty()) {
+                    val first = selectedTransferItems.first()
+                    showTransferSessionOverlay(true, first.name, first.sizeBytes)
                     transferEngine.sendItemsToPeers(
                         items = selectedTransferItems.toList(),
                         targetHostIps = listOf(ip to 53317),
@@ -1165,7 +1286,7 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Geçmişi Temizle") { _: DialogInterface, _: Int ->
                 transferEngine.clearHistory()
                 lastSavedOrPartialFilePath = null
-                binding.cardActiveTransfer.visibility = View.GONE
+                hideOverlaySmoothly(binding.overlayTransferSession)
                 Toast.makeText(this, "Aktarım geçmişi temizlendi.", Toast.LENGTH_SHORT).show()
             }
             .setPositiveButton("Kapat", null)
@@ -1179,8 +1300,8 @@ class MainActivity : AppCompatActivity() {
         val msg = buildString {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
-            appendLine("• Aktif Wi-Fi / Köprü IP: $ipText")
-            appendLine("• Zero-Copy TCP Portu: 53317 (16 MB Tampon / 4 MB Blok)")
+            appendLine("• Aktif IP Adresleri: $ipText")
+            appendLine("• Zero-Copy Motoru: NIO SocketChannel + 8 MB Direct DMA")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1196,7 +1317,7 @@ class MainActivity : AppCompatActivity() {
         val primaryIp = ips.firstOrNull() ?: "192.168.49.1"
         val url = "http://$primaryIp:53319"
         val msg = buildString {
-            appendLine("Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Doğrudan Köprü ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:")
+            appendLine("Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Hotspot ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:")
             appendLine()
             append(url)
         }
@@ -1215,15 +1336,19 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Donanım Bant Desteği: $hwBands")
             appendLine("• Aktif IP Adresleri: $ips")
             appendLine()
-            appendLine("Modemsiz (Çevrimdışı) 5 GHz Maksimum Hız İçin 2 Yöntem:")
-            appendLine("1) Alım sekmesindeki '5 GHz Doğrudan Köprü Kur' butonuna basın; ekranda çıkan DIRECT-... 5 GHz ağına diğer telefonun Wi-Fi ayarlarından bağlanın.")
-            append("2) Veya telefonlardan birinde 5 GHz Mobil Erişim Noktası (Hotspot) açıp diğer telefonu ona bağlayın; Zeph internet harcamadan doğrudan 5 GHz donanım hızında aktarım yapar.")
+            append("İki cihaz aynı Wi-Fi ağındayken veya telefonlardan birinin Mobil Erişim Noktası (Hotspot) açıkken birbirini otomatik bulur. Listeden hedef cihaza dokunduğunuzda karşı ekranda tam ekran onay penceresi açılır ve maksimum donanım hızında aktarım başlar.")
         }
         AlertDialog.Builder(this)
-            .setTitle("Maksimum Hız & Sorun Giderme")
+            .setTitle("Sorun Giderme")
             .setMessage(msg)
-            .setPositiveButton("5 GHz Doğrudan Köprü Kur") { _: DialogInterface, _: Int ->
-                binding.btnCreate5GhzBridge.performClick()
+            .setPositiveButton("Ağları & Köprüleri Sıfırla") { _: DialogInterface, _: Int ->
+                wifiDirectManager.cleanupStaleGroups {
+                    wifiDirectManager.discoverPeers()
+                    lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                    runOnUiThread {
+                        Toast.makeText(this, "Tüm Wi-Fi Direct ve LAN kanalları sıfırlanıp yenilendi.", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
             .setNegativeButton("Kapat", null)
             .show()
@@ -1267,7 +1392,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        activeConsentDialog?.dismiss()
         skeletonAnimationJob?.cancel()
         wifiDirectManager.stop()
         lanDiscoveryManager.stop()

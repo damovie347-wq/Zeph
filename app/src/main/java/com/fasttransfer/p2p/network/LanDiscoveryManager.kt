@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import com.fasttransfer.p2p.model.ConnectionTransport
 import com.fasttransfer.p2p.model.DeviceCategory
 import com.fasttransfer.p2p.model.PeerDevice
@@ -41,6 +42,12 @@ class LanDiscoveryManager(
 
     private val SERVICE_TYPE = "_fasttransfer._tcp."
 
+    fun getLocalDeviceBrand(): String {
+        val brand = Build.MANUFACTURER?.trim().orEmpty()
+        if (brand.isEmpty()) return "Android"
+        return brand.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
+
     fun start() {
         acquireMulticastLock()
         startUdpListener()
@@ -50,7 +57,7 @@ class LanDiscoveryManager(
 
     private fun classifyTransportByIp(ip: String): ConnectionTransport {
         return if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) {
-            ConnectionTransport.WIFI_DIRECT_5GHZ
+            ConnectionTransport.WIFI_DIRECT_AUTO
         } else {
             ConnectionTransport.LAN_HOTSPOT
         }
@@ -58,7 +65,6 @@ class LanDiscoveryManager(
 
     private fun isWifiOrHotspotInterface(name: String): Boolean {
         val n = name.lowercase()
-        // Exclude cellular/mobile data (rmnet, ccmni, pdp) and VPN/tunnel (tun, tap, dummy) interfaces
         if (n.startsWith("rmnet") || n.startsWith("ccmni") || n.startsWith("pdp") ||
             n.startsWith("tun") || n.startsWith("tap") || n.startsWith("dummy") || n.startsWith("lo")
         ) {
@@ -101,12 +107,14 @@ class LanDiscoveryManager(
                         val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         val json = JSONObject(payload)
                         val alias = json.optString("alias", "Zeph Cihazı")
+                        val model = json.optString("model", "Samsung")
                         val port = json.optInt("port", transferPort)
                         val transport = classifyTransportByIp(senderIp)
 
                         val peer = PeerDevice(
                             id = "ip_$senderIp",
                             alias = alias,
+                            deviceModel = model,
                             ipAddress = senderIp,
                             macAddress = null,
                             port = port,
@@ -149,6 +157,7 @@ class LanDiscoveryManager(
             try {
                 val json = JSONObject().apply {
                     put("alias", getLocalAlias())
+                    put("model", getLocalDeviceBrand())
                     put("port", transferPort)
                     put("ping", isPing)
                 }
@@ -186,6 +195,7 @@ class LanDiscoveryManager(
             try {
                 val json = JSONObject().apply {
                     put("alias", getLocalAlias())
+                    put("model", getLocalDeviceBrand())
                     put("port", transferPort)
                     put("ping", false)
                 }
@@ -206,15 +216,16 @@ class LanDiscoveryManager(
 
     fun addManualFavoritePeer(
         ipAddress: String,
-        alias: String = "Doğrudan Cihaz ($ipAddress)",
+        alias: String = "Cihaz ($ipAddress)",
         isP2pBridge: Boolean = false
     ) {
         val cleanIp = ipAddress.trim()
         if (cleanIp.isEmpty() || isOwnLocalIp(cleanIp)) return
-        val transport = if (isP2pBridge) ConnectionTransport.WIFI_DIRECT_5GHZ else classifyTransportByIp(cleanIp)
+        val transport = if (isP2pBridge) ConnectionTransport.WIFI_DIRECT_AUTO else classifyTransportByIp(cleanIp)
         peersByIp[cleanIp] = PeerDevice(
             id = "fav_$cleanIp",
             alias = alias,
+            deviceModel = "Android",
             ipAddress = cleanIp,
             macAddress = null,
             port = transferPort,
@@ -225,12 +236,6 @@ class LanDiscoveryManager(
         )
         notifyPeersUpdated()
         sendUnicastAnnounce(cleanIp)
-    }
-
-    fun removePeerByIp(ipAddress: String) {
-        if (peersByIp.remove(ipAddress) != null) {
-            notifyPeersUpdated()
-        }
     }
 
     private fun startNsdRegistrationAndDiscovery() {
@@ -274,6 +279,8 @@ class LanDiscoveryManager(
                         val info = resolved ?: return
                         val hostIp = info.host?.hostAddress ?: return
                         if (isOwnLocalIp(hostIp)) return
+                        // Do not overwrite an already-verified UDP peer
+                        if (peersByIp.containsKey(hostIp)) return
                         val rawName = info.serviceName
                             .removePrefix("Zeph_")
                             .removePrefix("FastTransfer_")
@@ -281,6 +288,7 @@ class LanDiscoveryManager(
                         peersByIp[hostIp] = PeerDevice(
                             id = "ip_$hostIp",
                             alias = rawName.ifBlank { "Cihaz ($hostIp)" },
+                            deviceModel = "Android",
                             ipAddress = hostIp,
                             macAddress = null,
                             port = info.port.takeIf { it > 0 } ?: transferPort,

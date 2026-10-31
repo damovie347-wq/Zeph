@@ -12,9 +12,8 @@ enum class DeviceCategory {
 }
 
 enum class ConnectionTransport(val label: String, val priority: Int) {
-    WIFI_DIRECT_5GHZ("5 GHz Doğrudan Köprü (Maks Hız)", 1),
-    WIFI_DIRECT_2_4GHZ("2.4 GHz Doğrudan Köprü", 2),
-    LAN_HOTSPOT("Yerel Ağ / Modem IP", 3)
+    WIFI_DIRECT_AUTO("Doğrudan Köprü (6GHz / 5GHz / 2.4GHz)", 1),
+    LAN_HOTSPOT("Yerel Ağ / Wi-Fi", 2)
 }
 
 enum class SendMode {
@@ -56,6 +55,7 @@ data class TransferItem(
 data class PeerDevice(
     val id: String,
     val alias: String,
+    val deviceModel: String = "Android",
     val ipAddress: String?,
     val macAddress: String?,
     val port: Int = 53317,
@@ -67,28 +67,41 @@ data class PeerDevice(
 
 data class IncomingTransferRequest(
     val senderAlias: String,
+    val senderModel: String,
     val senderIp: String,
     val transportLabel: String,
     val fileCount: Int,
     val totalBytes: Long,
+    val firstFileName: String,
+    val firstFileSize: Long,
     val filePreviewLines: String,
     val onDecision: (Boolean) -> Unit
 )
 
 data class TransferProgress(
     val fileName: String,
+    val fileIndex: Int = 0,
+    val totalFiles: Int = 1,
     val bytesTransferred: Long,
     val totalBytes: Long,
     val speedMbps: Double,
     val etaSeconds: Long,
     val status: TransferStatus,
     val transportLabel: String,
+    val isSending: Boolean = false,
     val savedFilePath: String? = null,
     val message: String? = null
 ) {
     val progressPercent: Int
         get() = if (totalBytes > 0L) {
             ((bytesTransferred * 100L) / totalBytes).toInt().coerceIn(0, 100)
+        } else {
+            0
+        }
+
+    val progressPermille: Int
+        get() = if (totalBytes > 0L) {
+            ((bytesTransferred * 1000L) / totalBytes).toInt().coerceIn(0, 1000)
         } else {
             0
         }

@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@color/bg_main_dark">
 
-    <!-- MAIN CONTENT CONTAINER + GLOBAL TRANSFER CARD + BOTTOM NAV -->
+    <!-- MAIN CONTENT CONTAINER + BOTTOM NAV -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -19,7 +19,7 @@
             android:layout_weight="1">
 
             <!-- ========================================================= -->
-            <!-- TAB 1: ALIM (RECEIVE PAGE - Video 00:02 - 00:03 & 00:38) -->
+            <!-- TAB 1: ALIM (RECEIVE PAGE - Exact match to Video 2 00:00) -->
             <!-- ========================================================= -->
             <RelativeLayout
                 android:id="@+id/pageReceive"
@@ -69,17 +69,17 @@
 
                     <com.fasttransfer.p2p.ui.RadarPulseView
                         android:id="@+id/radarPulseReceive"
-                        android:layout_width="172dp"
-                        android:layout_height="172dp" />
+                        android:layout_width="176dp"
+                        android:layout_height="176dp" />
 
                     <TextView
                         android:id="@+id/tvDeviceAliasReceive"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="20dp"
+                        android:layout_marginTop="24dp"
                         android:text="Kind Carrot"
                         android:textColor="@color/text_primary_white"
-                        android:textSize="36sp"
+                        android:textSize="38sp"
                         android:fontFamily="sans-serif" />
 
                     <TextView
@@ -87,85 +87,47 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:background="@drawable/bg_badge_band"
-                        android:paddingHorizontal="12dp"
-                        android:paddingVertical="5dp"
-                        android:text="5 GHz Doğrudan Köprü &amp; LAN Hazır • Port 53317"
-                        android:textColor="@color/accent_cyan_text"
-                        android:textSize="12sp" />
+                        android:text="Otomatik 6 GHz / 5 GHz / 2.4 GHz Köprü Hazır"
+                        android:textColor="@color/text_secondary_muted"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
                 </LinearLayout>
 
-                <!-- Bottom Pill Buttons: "5 GHz Doğrudan Köprü Kur" & "Link üzerinden al" -->
+                <!-- Bottom Pill Button: ONLY "Link üzerinden al" (Exact match to Video 2 00:00-00:08) -->
                 <LinearLayout
+                    android:id="@+id/btnReceiveViaLink"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:layout_height="44dp"
                     android:layout_alignParentBottom="true"
                     android:layout_centerHorizontal="true"
-                    android:layout_marginBottom="8dp"
+                    android:layout_marginBottom="16dp"
+                    android:background="@drawable/bg_button_outline_pill"
+                    android:clickable="true"
+                    android:focusable="true"
                     android:gravity="center"
-                    android:orientation="vertical">
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="20dp">
 
-                    <LinearLayout
-                        android:id="@+id/btnCreate5GhzBridge"
+                    <ImageView
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:src="@drawable/ic_globe_link"
+                        app:tint="@color/accent_cyan_text" />
+
+                    <TextView
                         android:layout_width="wrap_content"
-                        android:layout_height="40dp"
-                        android:layout_marginBottom="8dp"
-                        android:background="@drawable/bg_button_cyan_pill"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:gravity="center"
-                        android:orientation="horizontal"
-                        android:paddingHorizontal="18dp">
-
-                        <ImageView
-                            android:layout_width="18dp"
-                            android:layout_height="18dp"
-                            android:src="@drawable/ic_wifi_receive"
-                            app:tint="@color/accent_cyan_dark_text" />
-
-                        <TextView
-                            android:id="@+id/tvCreate5GhzBridge"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:text="5 GHz Doğrudan Köprü Kur (Modemsiz Maks Hız)"
-                            android:textColor="@color/accent_cyan_dark_text"
-                            android:textSize="13sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:id="@+id/btnReceiveViaLink"
-                        android:layout_width="wrap_content"
-                        android:layout_height="42dp"
-                        android:background="@drawable/bg_button_outline_pill"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:gravity="center"
-                        android:orientation="horizontal"
-                        android:paddingHorizontal="20dp">
-
-                        <ImageView
-                            android:layout_width="18dp"
-                            android:layout_height="18dp"
-                            android:src="@drawable/ic_globe_link"
-                            app:tint="@color/accent_cyan_text" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:text="@string/receive_via_link"
-                            android:textColor="@color/text_primary_white"
-                            android:textSize="14sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/receive_via_link"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
                 </LinearLayout>
 
             </RelativeLayout>
 
             <!-- ========================================================= -->
-            <!-- TAB 2: GÖNDER (SEND PAGE - Video 00:04 - 00:37 & 00:40)  -->
+            <!-- TAB 2: GÖNDER (SEND PAGE)                                 -->
             <!-- ========================================================= -->
             <ScrollView
                 android:id="@+id/pageSend"
@@ -182,7 +144,7 @@
                     android:paddingTop="18dp"
                     android:paddingBottom="24dp">
 
-                    <!-- STATE A: 6-BUTTON SELECTION GRID (Video 00:04 - 00:15) -->
+                    <!-- STATE A: 6-BUTTON SELECTION GRID -->
                     <LinearLayout
                         android:id="@+id/layoutSelectionGrid"
                         android:layout_width="match_parent"
@@ -379,7 +341,7 @@
                         </LinearLayout>
                     </LinearLayout>
 
-                    <!-- STATE B: SELECTED FILES SUMMARY CARD (Video 00:16 - 00:17) -->
+                    <!-- STATE B: SELECTED FILES SUMMARY CARD -->
                     <LinearLayout
                         android:id="@+id/layoutSelectedSummary"
                         android:layout_width="match_parent"
@@ -426,11 +388,10 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="Boyut: 2.2 KB"
+                            android:text="Boyut: 2.5 GB"
                             android:textColor="@color/text_primary_white"
                             android:textSize="14sp" />
 
-                        <!-- File Preview Thumbnail Chip -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -447,7 +408,7 @@
                                     android:layout_width="24dp"
                                     android:layout_height="24dp"
                                     android:layout_gravity="center"
-                                    android:src="@drawable/ic_align_left_doc"
+                                    android:src="@drawable/ic_clapperboard_video"
                                     app:tint="@color/text_primary_white" />
                             </FrameLayout>
 
@@ -464,7 +425,6 @@
                                 android:textSize="13sp" />
                         </LinearLayout>
 
-                        <!-- Bottom Row: Düzenle & + Ekle Pill Button -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -499,9 +459,7 @@
                         </LinearLayout>
                     </LinearLayout>
 
-                    <!-- ========================================================= -->
-                    <!-- NEARBY DEVICES HEADER (Video 00:04, 00:14, 00:34, 00:36) -->
-                    <!-- ========================================================= -->
+                    <!-- NEARBY DEVICES HEADER -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -559,7 +517,7 @@
                             app:tint="@color/text_primary_white" />
                     </LinearLayout>
 
-                    <!-- SKELETON SCANNING PLACEHOLDER CARD (Exact match to Video 00:04, 00:09, 00:14, 00:17) -->
+                    <!-- SKELETON SCANNING PLACEHOLDER CARD -->
                     <LinearLayout
                         android:id="@+id/cardScanningPlaceholder"
                         android:layout_width="match_parent"
@@ -607,7 +565,7 @@
                         android:nestedScrollingEnabled="false"
                         android:visibility="gone" />
 
-                    <!-- TROUBLESHOOT LINK & DYNAMIC TIP (Video 00:04 & 00:14) -->
+                    <!-- TROUBLESHOOT LINK & DYNAMIC TIP -->
                     <TextView
                         android:id="@+id/btnTroubleshoot"
                         android:layout_width="wrap_content"
@@ -638,7 +596,7 @@
             </ScrollView>
 
             <!-- ========================================================= -->
-            <!-- TAB 3: AYARLAR (SETTINGS & HARDWARE TUNING PAGE)          -->
+            <!-- TAB 3: AYARLAR (SETTINGS PAGE)                            -->
             <!-- ========================================================= -->
             <ScrollView
                 android:id="@+id/pageSettings"
@@ -655,7 +613,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Ayarlar ve Donanım Hızlandırma"
+                        android:text="Ayarlar"
                         android:textColor="@color/text_primary_white"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -706,7 +664,7 @@
                             android:textStyle="bold" />
                     </LinearLayout>
 
-                    <!-- Frequency Band & Approval Policy -->
+                    <!-- Automatic Band & Bridge Control -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -718,7 +676,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Kablosuz Köprü &amp; İzin Ayarları"
+                            android:text="Otomatik En Yüksek Protokol (6 GHz / 5 GHz / 2.4 GHz)"
                             android:textColor="@color/accent_cyan_bright"
                             android:textSize="14sp"
                             android:textStyle="bold" />
@@ -728,7 +686,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="6dp"
-                            android:text="Modem Üzerinden (AP Relay) hız yarıya düşer (~50 MB/s). Maksimum fiziksel hız (100+ MB/s) için Alım ekranındaki '5 GHz Doğrudan Köprü Kur' butonunu veya listedeki '5 GHz Wi-Fi Direct' kanalını kullanın."
+                            android:text="Cihaz listesinden hedefe dokunduğunuzda uygulama otomatik olarak her iki cihazın desteklediği en yüksek ortak standardı (Wi-Fi 7 / 6E 6 GHz -> Wi-Fi 6/5 5 GHz -> 2.4 GHz) seçer ve 4 paralel NIO kanalıyla maksimum MB/s hızda gönderir."
                             android:textColor="@color/text_secondary_muted"
                             android:textSize="13sp" />
 
@@ -738,7 +696,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
                             android:checked="true"
-                            android:text="Önce 5 GHz / 6 GHz Doğrudan Köprü Dene (Desteklenmezse 2.4 GHz)"
+                            android:text="Otomatik En Yüksek Frekans Müzakeresi (6 GHz / 5 GHz -> 2.4 GHz)"
                             android:textColor="@color/text_primary_white" />
 
                         <com.google.android.material.switchmaterial.SwitchMaterial
@@ -756,25 +714,44 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
                             android:checked="false"
-                            android:text="Üst Çubukta Sürekli 'Zero-Copy Aktif' Bildirimi Göster"
+                            android:text="Üst Çubukta Sürekli Bildirim Göster"
                             android:textColor="@color/text_primary_white" />
 
-                        <TextView
-                            android:id="@+id/btnStopServiceNotification"
-                            android:layout_width="wrap_content"
-                            android:layout_height="36dp"
-                            android:layout_gravity="end"
-                            android:layout_marginTop="6dp"
-                            android:background="@drawable/bg_button_outline_pill"
-                            android:gravity="center"
-                            android:paddingHorizontal="16dp"
-                            android:text="Üstteki Bildirimi Şimdi Kapat"
-                            android:textColor="@color/accent_cyan_text"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:gravity="end"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/btnDisconnectBridgeNow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="36dp"
+                                android:layout_marginEnd="8dp"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="14dp"
+                                android:text="Açık Wi-Fi Direct / Köprüleri Kapat"
+                                android:textColor="@color/accent_danger_red"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/btnStopServiceNotification"
+                                android:layout_width="wrap_content"
+                                android:layout_height="36dp"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="14dp"
+                                android:text="Bildirimi Kapat"
+                                android:textColor="@color/accent_cyan_text"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
                     </LinearLayout>
 
-                    <!-- Zero-Copy & %5 Partial Preservation Info + Clear History -->
+                    <!-- Clear History Card -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -795,9 +772,8 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="6dp"
-                            android:text="• Hedef Klasör: /storage/emulated/0/Download (Orijinal Uzantı)
-• Soket Tamponu: SO_SNDBUF=16MB, SO_RCVBUF=16MB, 32MB DMA Zero-Copy
-• İptal / Kopma Kuralı: Dosya ASLA silinmez; posix_fallocate sonrası gerçek boyuta truncate() + fsync() yapılır ve FileProvider ile anında oynatılabilir."
+                            android:text="• Hedef Klasör: /storage/emulated/0/Download
+• İptal / Kopma Kuralı: Dosya ASLA silinmez; o ana kadar inen kısmi boyut mühürlenir ve anında oynatılabilir."
                             android:textColor="@color/text_secondary_muted"
                             android:textSize="13sp" />
 
@@ -822,160 +798,7 @@
         </FrameLayout>
 
         <!-- ========================================================= -->
-        <!-- GLOBAL LIVE ZERO-COPY TRANSFER SPEEDOMETER & %5 PARTIAL   -->
-        <!-- (Visible on BOTH Alım and Gönder tabs, with 'X' Dismiss!) -->
-        <!-- ========================================================= -->
-        <LinearLayout
-            android:id="@+id/cardActiveTransfer"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginHorizontal="14dp"
-            android:layout_marginBottom="8dp"
-            android:background="@drawable/bg_card_nearby"
-            android:elevation="8dp"
-            android:orientation="vertical"
-            android:padding="14dp"
-            android:visibility="gone">
-
-            <RelativeLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content">
-
-                <TextView
-                    android:id="@+id/tvTransferTitle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_alignParentStart="true"
-                    android:layout_centerVertical="true"
-                    android:layout_toStartOf="@+id/tvTransferSpeedMbps"
-                    android:ellipsize="end"
-                    android:singleLine="true"
-                    android:text="Zero-Copy Aktarım"
-                    android:textColor="@color/accent_cyan_bright"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvTransferSpeedMbps"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_centerVertical="true"
-                    android:layout_marginEnd="10dp"
-                    android:layout_toStartOf="@+id/btnDismissTransferCard"
-                    android:text="0.0 MB/s"
-                    android:textColor="@color/accent_green_speed"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
-
-                <ImageButton
-                    android:id="@+id/btnDismissTransferCard"
-                    android:layout_width="30dp"
-                    android:layout_height="30dp"
-                    android:layout_alignParentEnd="true"
-                    android:layout_centerVertical="true"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Kapat ve Sıfırla"
-                    android:padding="4dp"
-                    android:src="@drawable/ic_close_x"
-                    app:tint="@color/text_primary_white" />
-            </RelativeLayout>
-
-            <TextView
-                android:id="@+id/tvTransferFileName"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:ellipsize="middle"
-                android:singleLine="true"
-                android:text="video.mp4"
-                android:textColor="@color/text_primary_white"
-                android:textSize="13sp" />
-
-            <ProgressBar
-                android:id="@+id/progressBarTransfer"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="8dp"
-                android:layout_marginTop="8dp"
-                android:max="100"
-                android:progress="0"
-                android:progressTint="@color/accent_cyan_bright"
-                android:progressBackgroundTint="@color/bg_skeleton" />
-
-            <RelativeLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp">
-
-                <TextView
-                    android:id="@+id/tvTransferBytesAndPercent"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="%0 (0 MB / 0 MB)"
-                    android:textColor="@color/text_secondary_muted"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/tvTransferEta"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_alignParentEnd="true"
-                    android:text="Kalan Süre: Hesaplanıyor..."
-                    android:textColor="@color/text_secondary_muted"
-                    android:textSize="12sp" />
-            </RelativeLayout>
-
-            <!-- Action Buttons: Kısmi Dosyayı Aç, Duraklat/Devam, Durdur (%5 Koru) -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:gravity="end"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/btnOpenPartialFile"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_button_cyan_pill"
-                    android:gravity="center"
-                    android:paddingHorizontal="14dp"
-                    android:text="Dosyayı Aç / Test Et"
-                    android:textColor="@color/accent_cyan_dark_text"
-                    android:textSize="12sp"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/btnPauseResumeTransfer"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_button_outline_pill"
-                    android:gravity="center"
-                    android:paddingHorizontal="12dp"
-                    android:text="Duraklat"
-                    android:textColor="@color/accent_warning_amber"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnCancelTransferKeepPartial"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:background="@drawable/bg_button_outline_pill"
-                    android:gravity="center"
-                    android:paddingHorizontal="12dp"
-                    android:text="Durdur (%5 Koru)"
-                    android:textColor="@color/accent_danger_red"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- ========================================================= -->
-        <!-- BOTTOM NAVIGATION BAR (Video 00:02 - 00:40: Alım, Gönder, Ayarlar) -->
+        <!-- BOTTOM NAVIGATION BAR (Alım, Gönder, Ayarlar)             -->
         <!-- ========================================================= -->
         <LinearLayout
             android:id="@+id/bottomNavBar"
@@ -986,7 +809,6 @@
             android:orientation="horizontal"
             android:weightSum="3">
 
-            <!-- Nav Item 1: Alım -->
             <LinearLayout
                 android:id="@+id/navItemReceive"
                 android:layout_width="0dp"
@@ -1023,7 +845,6 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- Nav Item 2: Gönder -->
             <LinearLayout
                 android:id="@+id/navItemSend"
                 android:layout_width="0dp"
@@ -1058,7 +879,6 @@
                     android:textSize="12sp" />
             </LinearLayout>
 
-            <!-- Nav Item 3: Ayarlar -->
             <LinearLayout
                 android:id="@+id/navItemSettings"
                 android:layout_width="0dp"
@@ -1097,8 +917,646 @@
 
     </LinearLayout>
 
+    <!-- =================================================================== -->
+    <!-- FULL-SCREEN OVERLAY 1: INCOMING REQUEST (Exact Video 2 00:09-00:13) -->
+    <!-- =================================================================== -->
+    <RelativeLayout
+        android:id="@+id/overlayIncomingRequest"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#050809"
+        android:clickable="true"
+        android:focusable="true"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:src="@drawable/ic_device_phone"
+                app:tint="@color/text_primary_white" />
+
+            <TextView
+                android:id="@+id/tvOverlaySenderAlias"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="Kind Carrot"
+                android:textColor="@color/text_primary_white"
+                android:textSize="30sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvOverlaySenderModelBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_chip_device_model"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="3dp"
+                    android:text="Samsung"
+                    android:textColor="@color/accent_cyan_text"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvOverlayWantToSend"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="36dp"
+                android:gravity="center"
+                android:text="sana bir dosya göndermek istiyor"
+                android:textColor="@color/text_primary_white"
+                android:textSize="18sp" />
+
+            <!-- "Doğrula" & "Seçenekler" Action Row (Exact match to Video 2 00:09) -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/btnOverlayVerify"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:src="@drawable/ic_check_mark"
+                        app:tint="@color/text_primary_white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="Doğrula"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/btnOverlayOptions"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:src="@drawable/ic_settings_gear"
+                        app:tint="@color/text_primary_white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="Seçenekler"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Bottom Pill Buttons: "✕ Reddet" (#F28B82) & "✓ Kabul et" (#6CD4FF) (Exact Video 2 00:09) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:layout_marginBottom="18dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:id="@+id/btnOverlayDecline"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginEnd="14dp"
+                android:background="@drawable/bg_button_red_salmon_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:paddingHorizontal="22dp">
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_close_x"
+                    app:tint="#3B0907" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Reddet"
+                    android:textColor="#3B0907"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnOverlayAccept"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_button_cyan_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:paddingHorizontal="22dp">
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_check_mark"
+                    app:tint="@color/accent_cyan_dark_text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Kabul et"
+                    android:textColor="@color/accent_cyan_dark_text"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+
+    </RelativeLayout>
+
+    <!-- =================================================================== -->
+    <!-- FULL-SCREEN OVERLAY 2: SEÇENEKLER (Exact Video 2 00:10 - 00:12)     -->
+    <!-- =================================================================== -->
+    <LinearLayout
+        android:id="@+id/overlayIncomingOptions"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#050809"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageButton
+                android:id="@+id/btnCloseIncomingOptions"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Geri"
+                android:padding="8dp"
+                android:src="@drawable/ic_arrow_back"
+                app:tint="@color/text_primary_white" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="Seçenekler"
+                android:textColor="@color/text_primary_white"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Hedef klasör"
+                android:textColor="@color/text_primary_white"
+                android:textSize="18sp" />
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_edit_pencil"
+                app:tint="@color/text_primary_white" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvOptionsTargetFolder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="/storage/emulated/0/Download"
+            android:textColor="@color/text_secondary_muted"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="Medyayı galeriye kaydet"
+            android:textColor="@color/text_primary_white"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card_selection"
+            android:gravity="center"
+            android:paddingHorizontal="20dp"
+            android:text="Açık   ▾"
+            android:textColor="@color/text_primary_white"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Dosyalar"
+            android:textColor="@color/text_primary_white"
+            android:textSize="18sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <FrameLayout
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_card_selection">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_clapperboard_video"
+                    app:tint="@color/text_primary_white" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvOptionsFileName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="middle"
+                    android:singleLine="true"
+                    android:text="beautiful_bounce_big-1080.mp4"
+                    android:textColor="@color/text_primary_white"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/tvOptionsFileSize"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Değiştirilmemiş - 2.7 GB"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginEnd="12dp"
+                android:src="@drawable/ic_edit_pencil"
+                app:tint="@color/text_primary_white" />
+
+            <CheckBox
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:clickable="false" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- =================================================================== -->
+    <!-- FULL-SCREEN OVERLAY 3: "DOSYALAR ALINIYOR / GÖNDERİLİYOR"            -->
+    <!-- (Exact replica of Video 2 00:14 - 00:22 with Gelişmiş / Gizle!)     -->
+    <!-- =================================================================== -->
+    <RelativeLayout
+        android:id="@+id/overlayTransferSession"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#050809"
+        android:clickable="true"
+        android:focusable="true"
+        android:padding="18dp"
+        android:visibility="gone">
+
+        <!-- Top Header: "Dosyalar alınıyor" + "Hedef klasör: ..." + Per-File Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentTop="true"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvSessionMainTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Dosyalar alınıyor"
+                android:textColor="@color/text_primary_white"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvSessionSubPath"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Hedef klasör: /storage/emulated/0/Download"
+                android:textColor="@color/text_secondary_muted"
+                android:textSize="14sp" />
+
+            <!-- Active File Item Row (Icon + Filename (Size) + Thin Cyan Progress Bar) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <FrameLayout
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_card_selection">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_clapperboard_video"
+                        app:tint="@color/text_primary_white" />
+                </FrameLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/tvSessionItemTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="middle"
+                        android:singleLine="true"
+                        android:text="beautiful_bounce_big-1080.mp4 (2.7 GB)"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="15sp" />
+
+                    <ProgressBar
+                        android:id="@+id/progressSessionItem"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="6dp"
+                        android:layout_marginTop="8dp"
+                        android:max="100"
+                        android:progress="0"
+                        android:progressTint="@color/accent_cyan_bright"
+                        android:progressBackgroundTint="@color/bg_skeleton" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Instant Open / Play Button when %5 Partial or Completed -->
+            <TextView
+                android:id="@+id/btnOpenPartialFile"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginTop="18dp"
+                android:background="@drawable/bg_button_cyan_pill"
+                android:gravity="center"
+                android:paddingHorizontal="20dp"
+                android:text="Dosyayı Aç / Test Et"
+                android:textColor="@color/accent_cyan_dark_text"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Bottom Floating Progress Card (Exact replica of Video 2 00:14 - 00:22) -->
+        <LinearLayout
+            android:id="@+id/cardActiveTransfer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_bottom_progress_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <RelativeLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView
+                    android:id="@+id/tvTransferTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Toplam ilerleme (0:00)"
+                    android:textColor="@color/text_primary_white"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/btnDismissTransferCard"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:layout_alignParentEnd="true"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Kapat"
+                    android:padding="4dp"
+                    android:src="@drawable/ic_close_x"
+                    app:tint="@color/text_secondary_muted" />
+            </RelativeLayout>
+
+            <ProgressBar
+                android:id="@+id/progressBarTransfer"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="10dp"
+                android:layout_marginTop="12dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="@color/accent_cyan_bright"
+                android:progressBackgroundTint="@color/bg_skeleton" />
+
+            <!-- Collapsible Advanced Stats Block (Dosyalar / Boyut / Hız - Video 2 00:16-00:22) -->
+            <LinearLayout
+                android:id="@+id/layoutAdvancedStats"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical"
+                android:visibility="visible">
+
+                <TextView
+                    android:id="@+id/tvAdvancedFilesCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Dosyalar: 0 / 1"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvTransferBytesAndPercent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Boyut: 0 MB / 0 GB"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvTransferSpeedMbps"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Hız: 0.0 MB/s"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tvTransferEta"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text=""
+                    android:textColor="@color/accent_cyan_text"
+                    android:textSize="12sp" />
+
+                <!-- Hidden compatibility views referenced in code -->
+                <TextView
+                    android:id="@+id/tvTransferFileName"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- Bottom Row inside Card: "ⓘ Gelişmiş / Gizle", "Duraklat", "✕ İptal et" (Video 2 00:15-00:22) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="end|center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/btnToggleAdvancedStats"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:src="@drawable/ic_info_circle"
+                        app:tint="@color/text_primary_white" />
+
+                    <TextView
+                        android:id="@+id/tvToggleAdvancedLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="Gizle"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/btnPauseResumeTransfer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:paddingHorizontal="12dp"
+                    android:text="Duraklat"
+                    android:textColor="@color/accent_warning_amber"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/btnCancelTransferKeepPartial"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:src="@drawable/ic_close_x"
+                        app:tint="@color/text_primary_white" />
+
+                    <TextView
+                        android:id="@+id/tvCancelOrDoneLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="İptal et"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </RelativeLayout>
+
     <!-- ========================================================= -->
-    <!-- SPLASH OVERLAY (Video 00:00 - 00:01 Pure Black + Teal Ring) -->
+    <!-- SPLASH OVERLAY                                            -->
     <!-- ========================================================= -->
     <FrameLayout
         android:id="@+id/splashOverlay"

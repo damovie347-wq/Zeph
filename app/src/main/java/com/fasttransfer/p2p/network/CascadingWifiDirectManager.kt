@@ -171,19 +171,17 @@ class CascadingWifiDirectManager(
                 }
             })
 
-            mgr.setDnsSdResponseListeners(
-                ch,
-                { _, _, srcDevice ->
-                    handleSingleDiscoveredDevice(srcDevice)
-                },
-                { _, txtRecordMap, srcDevice ->
-                    val alias = txtRecordMap["alias"]
-                    if (!alias.isNullOrBlank() && !srcDevice.deviceAddress.isNullOrBlank()) {
-                        dnsSdAliasesByMac[srcDevice.deviceAddress] = alias
-                    }
-                    handleSingleDiscoveredDevice(srcDevice)
+            val servListener = WifiP2pManager.DnsSdServiceResponseListener { _, _, srcDevice ->
+                if (srcDevice != null && !srcDevice.deviceAddress.isNullOrBlank()) {
+                    onDnsSdPeerFound(srcDevice, null)
                 }
-            )
+            }
+            val txtListener = WifiP2pManager.DnsSdTxtRecordListener { _, txtRecordMap, srcDevice ->
+                if (srcDevice != null && !srcDevice.deviceAddress.isNullOrBlank()) {
+                    onDnsSdPeerFound(srcDevice, txtRecordMap)
+                }
+            }
+            mgr.setDnsSdResponseListeners(ch, servListener, txtListener)
             val serviceRequest = WifiP2pDnsSdServiceRequest.newInstance()
             mgr.clearServiceRequests(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
@@ -351,7 +349,7 @@ class CascadingWifiDirectManager(
             BufferedReader(FileReader("/proc/net/arp")).use { br ->
                 var line: String?
                 while (br.readLine().also { line = it } != null) {
-                    val parts = line!!.trim().split(Regex("\s+"))
+                    val parts = line!!.trim().split(' ', '\t').filter { it.isNotEmpty() }
                     if (parts.size >= 4) {
                         val ip = parts[0]
                         val flags = parts[2]

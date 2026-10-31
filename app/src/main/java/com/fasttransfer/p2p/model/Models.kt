@@ -10,7 +10,7 @@ enum class AppThemeMode(val prefValue: Int, val label: String) {
     LIGHT_CLEAN(2, "Açık Tema");
 
     companion object {
-        fun fromPref(value: Int): AppThemeMode = entries.firstOrNull { it.prefValue == value } ?: DARK_SLATE
+        fun fromPref(value: Int): AppThemeMode = values().firstOrNull { it.prefValue == value } ?: DARK_SLATE
     }
 }
 

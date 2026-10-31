@@ -828,8 +828,7 @@ class MainActivity : AppCompatActivity() {
             if (favoriteIps.isEmpty()) {
                 tvStatus.text = getString(R.string.dialog_favorites_empty)
             } else {
-                tvStatus.text = favoriteIps.joinToString("
-") { "• $it (Port 53317)" }
+                tvStatus.text = favoriteIps.joinToString("\n") { "• $it (Port 53317)" }
             }
         }
         updateFavText()
@@ -895,15 +894,7 @@ class MainActivity : AppCompatActivity() {
             popupWindow.dismiss()
             AlertDialog.Builder(this)
                 .setTitle("Gönderim Modları")
-                .setMessage(
-                    "• Tek alıcı: Dosyalar tek bir hedef cihaza gönderilir ve aktarım sonunda seçim temizlenir.
-
-" +
-                    "• Birden fazla alıcı: Seçiminiz korunur ve birden fazla cihaza art arda gönderilir.
-
-" +
-                    "• Link üzerinden paylaşın: Uygulama yüklü olmayan cihazlar tarayıcıdan (HTTP Port 53319) doğrudan indirebilir."
-                )
+                .setMessage("""• Tek alıcı: Dosyalar tek bir hedef cihaza gönderilir ve aktarım sonunda seçim temizlenir.\n\n• Birden fazla alıcı: Seçiminiz korunur ve birden fazla cihaza art arda gönderilir.\n\n• Link üzerinden paylaşın: Uygulama yüklü olmayan cihazlar tarayıcıdan (HTTP Port 53319) doğrudan indirebilir.""".trimIndent())
                 .setPositiveButton("Tamam", null)
                 .show()
         }
@@ -947,7 +938,7 @@ class MainActivity : AppCompatActivity() {
         val names = selectedTransferItems.map { "${it.name} (${StorageHelper.formatFileSize(it.sizeBytes)})" }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Seçili Dosyalar (Silmek için dokunun)")
-            .setItems(names) { _, which ->
+            .setItems(names) { dialog: android.content.DialogInterface, which: Int ->
                 if (which in selectedTransferItems.indices) {
                     selectedTransferItems.removeAt(which)
                     refreshSelectionUi()
@@ -975,7 +966,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Alınan Dosyalar (Oynatmak için seçin)")
-            .setItems(labels) { _, idx ->
+            .setItems(labels) { dialog: android.content.DialogInterface, idx: Int ->
                 val rec = records[idx]
                 openFileInExternalPlayer(File(rec.filePath))
             }
@@ -990,19 +981,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Donanım & Ağ Durumu")
-            .setMessage(
-                "• Cihaz Adı: $deviceAlias
-" +
-                "• Desteklenen Bantlar: $hwBands
-" +
-                "• Yerel IP Adresleri: $ipText
-" +
-                "• Zero-Copy TCP Portu: 53317 (8 MB Tampon)
-" +
-                "• Tarayıcı Link Portu: 53319
-" +
-                "• Hedef Klasör: /storage/emulated/0/Download"
-            )
+            .setMessage("""• Cihaz Adı: $deviceAlias\n• Desteklenen Bantlar: $hwBands\n• Yerel IP Adresleri: $ipText\n• Zero-Copy TCP Portu: 53317 (8 MB Tampon)\n• Tarayıcı Link Portu: 53319\n• Hedef Klasör: /storage/emulated/0/Download""".trimIndent())
             .setPositiveButton("Tamam", null)
             .show()
     }
@@ -1014,12 +993,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Link Üzerinden Al / Paylaş")
-            .setMessage(
-                "Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Hotspot ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:
-
-" +
-                "$url"
-            )
+            .setMessage("""Karşı cihazda uygulama yüklü olmasa bile aynı Wi-Fi veya Hotspot ağına bağlanıp tarayıcıdan şu adrese girerek dosyaları doğrudan indirebilirsiniz:\n\n$url""".trimIndent())
             .setPositiveButton("Tamam", null)
             .show()
     }
@@ -1029,18 +1003,8 @@ class MainActivity : AppCompatActivity() {
         val ips = lanDiscoveryManager.getLocalIpAddresses().joinToString(", ").ifEmpty { "Yok" }
         AlertDialog.Builder(this)
             .setTitle("Sorun Giderme ve Kademeli Frekans Onarımı")
-            .setMessage(
-                "• Donanım Bant Desteği: $hwBands
-" +
-                "• Aktif IP Adresleri: $ips
-
-" +
-                "Eğer karşıdaki cihaz eski bir modelse ve yalnızca 2.4 GHz destekliyorsa, uygulama 5 GHz denemesinden 0ms içinde otomatik olarak 2.4 GHz moduna düşer.
-
-" +
-                "Tüm ağ soketlerini ve Wi-Fi Direct / LAN keşfini şimdi yeniden başlatmak ister misiniz?"
-            )
-            .setPositiveButton("Taramayı & 2.4 GHz Uyumunu Yenile") { _, _ ->
+            .setMessage("""• Donanım Bant Desteği: $hwBands\n• Aktif IP Adresleri: $ips\n\nEğer karşıdaki cihaz eski bir modelse ve yalnızca 2.4 GHz destekliyorsa, uygulama 5 GHz denemesinden 0ms içinde otomatik olarak 2.4 GHz moduna düşer.\n\nTüm ağ soketlerini ve Wi-Fi Direct / LAN keşfini şimdi yeniden başlatmak ister misiniz?""".trimIndent())
+            .setPositiveButton("Taramayı & 2.4 GHz Uyumunu Yenile") { dialog: android.content.DialogInterface, which: Int ->
                 wifiDirectManager.discoverPeers()
                 lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
                 Toast.makeText(this, "Tüm Wi-Fi Direct ve LAN kanalları yenilendi.", Toast.LENGTH_SHORT).show()

@@ -615,19 +615,13 @@ class ZeroCopyTransferEngine(
                 if (item != null) {
                     val encodedName = URLEncoder.encode(item.name, "UTF-8").replace("+", "%20")
                     val header = buildString {
-                        append("HTTP/1.1 200 OK
-")
-                        append("Content-Type: ${item.mimeType}
-")
+                        append("HTTP/1.1 200 OK\r\n")
+                        append("Content-Type: " + item.mimeType + "\r\n")
                         if (item.sizeBytes > 0L) {
-                            append("Content-Length: ${item.sizeBytes}
-")
+                            append("Content-Length: " + item.sizeBytes + "\r\n")
                         }
-                        append("Content-Disposition: attachment; filename="$encodedName"
-")
-                        append("Connection: close
-
-")
+                        append("Content-Disposition: attachment; filename=\"" + encodedName + "\"\r\n")
+                        append("Connection: close\r\n\r\n")
                     }
                     out.write(header.toByteArray(Charsets.UTF_8))
                     out.flush()
@@ -676,12 +670,7 @@ class ZeroCopyTransferEngine(
                 append("</body></html>")
             }
             val bodyBytes = html.toByteArray(Charsets.UTF_8)
-            val responseHeader = "HTTP/1.1 200 OK
-Content-Type: text/html; charset=utf-8
-Content-Length: ${bodyBytes.size}
-Connection: close
-
-"
+            val responseHeader = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + bodyBytes.size + "\r\nConnection: close\r\n\r\n"
             out.write(responseHeader.toByteArray(Charsets.UTF_8))
             out.write(bodyBytes)
             out.flush()

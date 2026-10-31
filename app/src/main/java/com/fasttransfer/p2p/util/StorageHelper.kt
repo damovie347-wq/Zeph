@@ -297,7 +297,7 @@ object StorageHelper {
     }
 
     fun sanitizeFileName(raw: String): String {
-        val replaced = raw.replace(Regex("[\\/:*?"<>|]"), "_").trim()
+        val replaced = raw.replace(Regex("[^a-zA-Z0-9._-]"), "_").trim()
         return if (replaced.isEmpty()) "dosya_${System.currentTimeMillis()}.bin" else replaced
     }
 

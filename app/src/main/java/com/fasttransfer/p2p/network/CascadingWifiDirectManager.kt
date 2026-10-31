@@ -180,7 +180,7 @@ class CascadingWifiDirectManager(
             try {
                 val highBandConfig = WifiP2pConfig.Builder()
                     .setDeviceAddress(android.net.MacAddress.fromString(macAddress))
-                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OPERATING_BAND_5_GHZ)
+                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
                     .build()
 
                 activeBandLabel = "5 GHz Wi-Fi Direct"

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">FastTransfer</string>
+    <string name="app_name">Zeph</string>
     <string name="tab_receive">Alım</string>
     <string name="tab_send">Gönder</string>
     <string name="tab_settings">Ayarlar</string>

@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FastTransfer"
+rootProject.name = "Zeph"
 include(":app")

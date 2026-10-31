@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_main_dark"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- Top Title Row -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:text="@string/apk_picker_title"
+            android:textColor="@color/text_primary_white"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnCloseApkDialog"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Kapat"
+            android:src="@drawable/ic_close_x"
+            app:tint="@color/text_primary_white" />
+    </RelativeLayout>
+
+    <!-- Search Box -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_search_box"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="14dp">
+
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@drawable/ic_search_lens" />
+
+        <EditText
+            android:id="@+id/etSearchApk"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_marginStart="10dp"
+            android:background="@android:color/transparent"
+            android:hint="Uygulama veya paket ara..."
+            android:singleLine="true"
+            android:textColor="@color/text_primary_white"
+            android:textColorHint="@color/text_hint_dim"
+            android:textSize="15sp" />
+    </LinearLayout>
+
+    <!-- App Count & Select Multiple Apps Toggle (Video 00:27: "73 Uygulamalar" + "Select Multiple Apps") -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/tvApkTotalCount"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="0 Uygulamalar"
+            android:textColor="@color/text_primary_white"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="@string/apk_select_multiple"
+            android:textColor="@color/text_primary_white"
+            android:textSize="14sp" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchSelectMultipleApks"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <!-- Loading Progress + RecyclerView -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ProgressBar
+            android:id="@+id/progressApkLoading"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="24dp"
+            android:indeterminateTint="@color/accent_cyan_bright" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvApkList"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
+
+    <!-- Confirm Multiple Selection Button -->
+    <TextView
+        android:id="@+id/btnConfirmApkSelection"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_button_cyan_pill"
+        android:gravity="center"
+        android:text="Seçilen Uygulamaları Ekle"
+        android:textColor="@color/accent_cyan_dark_text"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+</LinearLayout>

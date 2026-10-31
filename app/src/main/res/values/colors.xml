@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Video Exact Backgrounds -->
+    <color name="bg_splash_black">#000000</color>
+    <color name="bg_main_dark">#101818</color>
+    <color name="bg_bottom_nav">#141E1E</color>
+    <color name="bg_card_selection">#233336</color>
+    <color name="bg_card_nearby">#182326</color>
+    <color name="bg_dialog_surface">#182427</color>
+    <color name="bg_bottom_sheet">#0E1618</color>
+    <color name="bg_skeleton">#26363A</color>
+    <color name="bg_search_input">#203036</color>
+
+    <!-- Video Exact Accents -->
+    <color name="accent_splash_teal">#00A884</color>
+    <color name="accent_cyan_bright">#6CD4FF</color>
+    <color name="accent_cyan_text">#7AD8FF</color>
+    <color name="accent_cyan_dark_text">#002A3A</color>
+    <color name="accent_nav_pill">#20424D</color>
+    <color name="accent_green_speed">#00E676</color>
+    <color name="accent_warning_amber">#FFB300</color>
+    <color name="accent_danger_red">#FF5252</color>
+
+    <!-- Text & Icons -->
+    <color name="text_primary_white">#ECF4F6</color>
+    <color name="text_secondary_muted">#93A8AC</color>
+    <color name="text_hint_dim">#687D82</color>
+    <color name="stroke_outline_subtle">#5C747A</color>
+    <color name="divider_subtle">#223236</color>
+</resources>

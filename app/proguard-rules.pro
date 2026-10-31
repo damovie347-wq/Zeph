@@ -1,0 +1,3 @@
+-keepattributes *Annotation*,InnerClasses,Signature
+-keep class com.fasttransfer.p2p.** { *; }
+-dontwarn kotlin.**

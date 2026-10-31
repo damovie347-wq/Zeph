@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FastTransfer</string>
+    <string name="tab_receive">Alım</string>
+    <string name="tab_send">Gönder</string>
+    <string name="tab_settings">Ayarlar</string>
+
+    <string name="receive_via_link">Link üzerinden al</string>
+    <string name="your_selection">Seçiminiz</string>
+    <string name="sel_file">Dosya</string>
+    <string name="sel_media">Medya</string>
+    <string name="sel_paste">Yapıştır</string>
+    <string name="sel_text">Metin</string>
+    <string name="sel_folder">Klasör</string>
+    <string name="sel_app">Uygulama</string>
+
+    <string name="nearby_devices">Yakınınızdaki cihazlar</string>
+    <string name="troubleshoot">Sorun Giderme</string>
+    <string name="tip_same_wifi">Lütfen hedef cihaz ile aynı wifi ağında olduğunuzdan emin olun.</string>
+    <string name="tip_share_sheet">Dosyalarınızı daha kolay seçmek için cihazınızın "Paylaş" özelliğini kullanabilirsiniz.</string>
+
+    <string name="btn_edit">Düzenle</string>
+    <string name="btn_add_plus">+ Ekle</string>
+    <string name="btn_cancel">İptal et</string>
+    <string name="btn_confirm">Onayla</string>
+    <string name="btn_add">Ekle</string>
+
+    <string name="dialog_text_title">Mesaj yazınız</string>
+    <string name="dialog_favorites_title">Favoriler</string>
+    <string name="dialog_favorites_empty">Henüz favori cihaz yok.</string>
+    <string name="sheet_add_title">Seçime ekle</string>
+    <string name="sheet_add_subtitle">Ne eklemek istiyorsunuz ?</string>
+
+    <string name="apk_picker_title">Uygulamalar (APK)</string>
+    <string name="apk_select_multiple">Select Multiple Apps</string>
+
+    <string name="mode_single_recipient">Tek alıcı</string>
+    <string name="mode_multi_recipient">Birden fazla alıcı</string>
+    <string name="mode_share_link">Link üzerinden paylaşın</string>
+    <string name="mode_explanation">Açıklama</string>
+</resources>

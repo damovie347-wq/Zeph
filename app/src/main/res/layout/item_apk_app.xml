@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingVertical="10dp"
+    android:paddingHorizontal="4dp">
+
+    <ImageView
+        android:id="@+id/ivApkIcon"
+        android:layout_width="46dp"
+        android:layout_height="46dp"
+        android:contentDescription="Uygulama İkonu" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="14dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvApkLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="1.1.1.1"
+            android:textColor="@color/text_primary_white"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvApkSizeAndVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="14.9 MB • v6.38.11"
+            android:textColor="@color/text_secondary_muted"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvApkPackage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="com.cloudflare.onedotonedotonedotone"
+            android:textColor="@color/text_secondary_muted"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <CheckBox
+        android:id="@+id/cbApkSelect"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:clickable="false"
+        android:focusable="false"
+        android:visibility="gone" />
+
+</LinearLayout>

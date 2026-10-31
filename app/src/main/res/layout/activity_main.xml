@@ -1,0 +1,1018 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_main_dark">
+
+    <!-- MAIN CONTENT CONTAINER + BOTTOM NAV -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- CONTENT PAGES -->
+        <FrameLayout
+            android:id="@+id/pageContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <!-- ========================================================= -->
+            <!-- TAB 1: ALIM (RECEIVE PAGE - Video 00:02 - 00:03 & 00:38) -->
+            <!-- ========================================================= -->
+            <RelativeLayout
+                android:id="@+id/pageReceive"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:padding="20dp"
+                android:visibility="visible">
+
+                <!-- Top Right History & Info Icons -->
+                <LinearLayout
+                    android:id="@+id/topBarReceive"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_alignParentEnd="true"
+                    android:layout_alignParentTop="true"
+                    android:orientation="horizontal">
+
+                    <ImageButton
+                        android:id="@+id/btnReceiveHistory"
+                        android:layout_width="42dp"
+                        android:layout_height="42dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Geçmiş"
+                        android:padding="9dp"
+                        android:src="@drawable/ic_history_clock"
+                        app:tint="@color/text_primary_white" />
+
+                    <ImageButton
+                        android:id="@+id/btnReceiveInfo"
+                        android:layout_width="42dp"
+                        android:layout_height="42dp"
+                        android:layout_marginStart="6dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Bilgi"
+                        android:padding="9dp"
+                        android:src="@drawable/ic_info_circle"
+                        app:tint="@color/text_primary_white" />
+                </LinearLayout>
+
+                <!-- Center Rotating Segmented Radar Logo + Device Alias ("Kind Carrot") -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_centerInParent="true"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <com.fasttransfer.p2p.ui.RadarPulseView
+                        android:id="@+id/radarPulseReceive"
+                        android:layout_width="176dp"
+                        android:layout_height="176dp" />
+
+                    <TextView
+                        android:id="@+id/tvDeviceAliasReceive"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="24dp"
+                        android:text="Kind Carrot"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="38sp"
+                        android:fontFamily="sans-serif" />
+
+                    <TextView
+                        android:id="@+id/tvReceiveBandStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_badge_band"
+                        android:paddingHorizontal="12dp"
+                        android:paddingVertical="4dp"
+                        android:text="5 GHz / 2.4 GHz Otomatik • Port 53317 Hazır"
+                        android:textColor="@color/accent_cyan_text"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <!-- Bottom Pill Button: "Link üzerinden al" -->
+                <LinearLayout
+                    android:id="@+id/btnReceiveViaLink"
+                    android:layout_width="wrap_content"
+                    android:layout_height="44dp"
+                    android:layout_alignParentBottom="true"
+                    android:layout_centerHorizontal="true"
+                    android:layout_marginBottom="16dp"
+                    android:background="@drawable/bg_button_outline_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="20dp">
+
+                    <ImageView
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:src="@drawable/ic_globe_link"
+                        app:tint="@color/accent_cyan_text" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/receive_via_link"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+            </RelativeLayout>
+
+            <!-- ========================================================= -->
+            <!-- TAB 2: GÖNDER (SEND PAGE - Video 00:04 - 00:37 & 00:40)  -->
+            <!-- ========================================================= -->
+            <ScrollView
+                android:id="@+id/pageSend"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="18dp"
+                    android:paddingTop="18dp"
+                    android:paddingBottom="24dp">
+
+                    <!-- STATE A: 6-BUTTON SELECTION GRID (Video 00:04 - 00:15) -->
+                    <LinearLayout
+                        android:id="@+id/layoutSelectionGrid"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="visible">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="12dp"
+                            android:text="@string/your_selection"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="19sp"
+                            android:textStyle="bold" />
+
+                        <!-- Row 1: Dosya, Medya, Yapıştır -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:weightSum="3">
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectFile"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginEnd="6dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_file_doc"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_file"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectMedia"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginHorizontal="3dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_media_image"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_media"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectPaste"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_clipboard_paste"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_paste"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Row 2: Metin, Klasör, Uygulama -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:orientation="horizontal"
+                            android:weightSum="3">
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectText"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginEnd="6dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_text_message"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_text"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectFolder"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginHorizontal="3dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_folder_dir"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_folder"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:id="@+id/btnSelectApp"
+                                android:layout_width="0dp"
+                                android:layout_height="76dp"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:background="@drawable/bg_card_selection"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:orientation="vertical">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:src="@drawable/ic_apps_grid"
+                                    app:tint="@color/text_primary_white" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:text="@string/sel_app"
+                                    android:textColor="@color/text_primary_white"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- STATE B: SELECTED FILES SUMMARY CARD (Video 00:16 - 00:17) -->
+                    <LinearLayout
+                        android:id="@+id/layoutSelectedSummary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp"
+                        android:visibility="gone">
+
+                        <RelativeLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/your_selection"
+                                android:textColor="@color/text_primary_white"
+                                android:textSize="18sp"
+                                android:textStyle="bold" />
+
+                            <ImageButton
+                                android:id="@+id/btnClearSelection"
+                                android:layout_width="28dp"
+                                android:layout_height="28dp"
+                                android:layout_alignParentEnd="true"
+                                android:background="?attr/selectableItemBackgroundBorderless"
+                                android:contentDescription="Temizle"
+                                android:src="@drawable/ic_close_x"
+                                app:tint="@color/text_primary_white" />
+                        </RelativeLayout>
+
+                        <TextView
+                            android:id="@+id/tvSelectedCount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="Dosyalar: 1"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="14sp" />
+
+                        <TextView
+                            android:id="@+id/tvSelectedSize"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="Boyut: 2.2 KB"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="14sp" />
+
+                        <!-- File Preview Thumbnail Chip -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <FrameLayout
+                                android:layout_width="46dp"
+                                android:layout_height="46dp"
+                                android:background="@drawable/bg_card_selection">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:layout_gravity="center"
+                                    android:src="@drawable/ic_align_left_doc"
+                                    app:tint="@color/text_primary_white" />
+                            </FrameLayout>
+
+                            <TextView
+                                android:id="@+id/tvSelectedFileNames"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="12dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="2"
+                                android:text="video.mp4"
+                                android:textColor="@color/text_secondary_muted"
+                                android:textSize="13sp" />
+                        </LinearLayout>
+
+                        <!-- Bottom Row: Düzenle & + Ekle Pill Button -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:gravity="end|center_vertical"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/btnEditSelection"
+                                android:layout_width="wrap_content"
+                                android:layout_height="38dp"
+                                android:background="?attr/selectableItemBackground"
+                                android:gravity="center"
+                                android:paddingHorizontal="16dp"
+                                android:text="@string/btn_edit"
+                                android:textColor="@color/text_primary_white"
+                                android:textSize="14sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/btnAddMoreSelection"
+                                android:layout_width="wrap_content"
+                                android:layout_height="40dp"
+                                android:layout_marginStart="8dp"
+                                android:background="@drawable/bg_button_cyan_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="20dp"
+                                android:text="@string/btn_add_plus"
+                                android:textColor="@color/accent_cyan_dark_text"
+                                android:textSize="14sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- ========================================================= -->
+                    <!-- NEARBY DEVICES HEADER (Video 00:04, 00:14, 00:34, 00:36) -->
+                    <!-- ========================================================= -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="22dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/nearby_devices"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="18sp"
+                            android:textStyle="bold" />
+
+                        <ImageButton
+                            android:id="@+id/btnRefreshPeers"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Yenile"
+                            android:padding="7dp"
+                            android:src="@drawable/ic_refresh_sync"
+                            app:tint="@color/text_primary_white" />
+
+                        <ImageButton
+                            android:id="@+id/btnManualScanIp"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Tarama"
+                            android:padding="7dp"
+                            android:src="@drawable/ic_radar_scan"
+                            app:tint="@color/text_primary_white" />
+
+                        <ImageButton
+                            android:id="@+id/btnFavoritesDialog"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Favoriler"
+                            android:padding="7dp"
+                            android:src="@drawable/ic_heart_fav"
+                            app:tint="@color/text_primary_white" />
+
+                        <ImageButton
+                            android:id="@+id/btnSendModeMenu"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Gönderim Modu"
+                            android:padding="7dp"
+                            android:src="@drawable/ic_settings_gear"
+                            app:tint="@color/text_primary_white" />
+                    </LinearLayout>
+
+                    <!-- SKELETON SCANNING PLACEHOLDER CARD (Exact match to Video 00:04, 00:09, 00:14, 00:17) -->
+                    <LinearLayout
+                        android:id="@+id/cardScanningPlaceholder"
+                        android:layout_width="match_parent"
+                        android:layout_height="84dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingHorizontal="18dp">
+
+                        <ImageView
+                            android:id="@+id/ivSkeletonDeviceIcon"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:alpha="0.45"
+                            android:src="@drawable/ic_device_phone"
+                            app:tint="@color/text_secondary_muted" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="16dp"
+                            android:gravity="bottom"
+                            android:orientation="horizontal">
+
+                            <View
+                                android:layout_width="34dp"
+                                android:layout_height="16dp"
+                                android:background="@drawable/bg_skeleton_box" />
+
+                            <View
+                                android:layout_width="76dp"
+                                android:layout_height="16dp"
+                                android:layout_marginStart="8dp"
+                                android:background="@drawable/bg_skeleton_box" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- DISCOVERED PEERS RECYCLERVIEW -->
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rvNearbyDevices"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:nestedScrollingEnabled="false"
+                        android:visibility="gone" />
+
+                    <!-- TROUBLESHOOT LINK & DYNAMIC TIP (Video 00:04 & 00:14) -->
+                    <TextView
+                        android:id="@+id/btnTroubleshoot"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_horizontal"
+                        android:layout_marginTop="20dp"
+                        android:background="?attr/selectableItemBackground"
+                        android:paddingHorizontal="16dp"
+                        android:paddingVertical="8dp"
+                        android:text="@string/troubleshoot"
+                        android:textColor="@color/accent_cyan_text"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvDynamicTip"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:gravity="center"
+                        android:lineSpacingExtra="3dp"
+                        android:paddingHorizontal="20dp"
+                        android:text="@string/tip_same_wifi"
+                        android:textColor="@color/text_secondary_muted"
+                        android:textSize="13sp" />
+
+                    <!-- ========================================================= -->
+                    <!-- LIVE ZERO-COPY TRANSFER SPEEDOMETER & %5 PARTIAL CONTROLS -->
+                    <!-- ========================================================= -->
+                    <LinearLayout
+                        android:id="@+id/cardActiveTransfer"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="20dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp"
+                        android:visibility="gone">
+
+                        <RelativeLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content">
+
+                            <TextView
+                                android:id="@+id/tvTransferTitle"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Zero-Copy Aktarım (5 GHz Direct)"
+                                android:textColor="@color/accent_cyan_bright"
+                                android:textSize="15sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/tvTransferSpeedMbps"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_alignParentEnd="true"
+                                android:text="0.0 MB/s"
+                                android:textColor="@color/accent_green_speed"
+                                android:textSize="16sp"
+                                android:textStyle="bold" />
+                        </RelativeLayout>
+
+                        <TextView
+                            android:id="@+id/tvTransferFileName"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:ellipsize="middle"
+                            android:singleLine="true"
+                            android:text="video.mp4"
+                            android:textColor="@color/text_primary_white"
+                            android:textSize="13sp" />
+
+                        <ProgressBar
+                            android:id="@+id/progressBarTransfer"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="10dp"
+                            android:layout_marginTop="10dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressTint="@color/accent_cyan_bright"
+                            android:progressBackgroundTint="@color/bg_skeleton" />
+
+                        <RelativeLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp">
+
+                            <TextView
+                                android:id="@+id/tvTransferBytesAndPercent"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="%0 (0 MB / 0 MB)"
+                                android:textColor="@color/text_secondary_muted"
+                                android:textSize="12sp" />
+
+                            <TextView
+                                android:id="@+id/tvTransferEta"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_alignParentEnd="true"
+                                android:text="Kalan Süre: Hesaplanıyor..."
+                                android:textColor="@color/text_secondary_muted"
+                                android:textSize="12sp" />
+                        </RelativeLayout>
+
+                        <!-- Action Buttons: Duraklat/Devam, İptal Et (%5 Kısmi Dosya Koru), Kısmi Dosyayı Aç -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:gravity="end"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/btnOpenPartialFile"
+                                android:layout_width="wrap_content"
+                                android:layout_height="36dp"
+                                android:layout_marginEnd="8dp"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="14dp"
+                                android:text="Kısmi Dosyayı Test Et / Aç"
+                                android:textColor="@color/accent_green_speed"
+                                android:textSize="12sp"
+                                android:textStyle="bold"
+                                android:visibility="gone" />
+
+                            <TextView
+                                android:id="@+id/btnPauseResumeTransfer"
+                                android:layout_width="wrap_content"
+                                android:layout_height="36dp"
+                                android:layout_marginEnd="8dp"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="14dp"
+                                android:text="Duraklat"
+                                android:textColor="@color/accent_warning_amber"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/btnCancelTransferKeepPartial"
+                                android:layout_width="wrap_content"
+                                android:layout_height="36dp"
+                                android:background="@drawable/bg_button_outline_pill"
+                                android:gravity="center"
+                                android:paddingHorizontal="14dp"
+                                android:text="Durdur (Kısmi Koru)"
+                                android:textColor="@color/accent_danger_red"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                </LinearLayout>
+            </ScrollView>
+
+            <!-- ========================================================= -->
+            <!-- TAB 3: AYARLAR (SETTINGS & HARDWARE TUNING PAGE)          -->
+            <!-- ========================================================= -->
+            <ScrollView
+                android:id="@+id/pageSettings"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:padding="20dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ayarlar ve Donanım Hızlandırma"
+                        android:textColor="@color/text_primary_white"
+                        android:textSize="22sp"
+                        android:textStyle="bold" />
+
+                    <!-- Device Alias Setting -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Cihaz Takma Adı (Alias)"
+                            android:textColor="@color/accent_cyan_bright"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <EditText
+                            android:id="@+id/etSettingsDeviceAlias"
+                            android:layout_width="match_parent"
+                            android:layout_height="44dp"
+                            android:layout_marginTop="8dp"
+                            android:background="@drawable/bg_search_box"
+                            android:hint="Kind Carrot"
+                            android:paddingHorizontal="12dp"
+                            android:singleLine="true"
+                            android:text="Kind Carrot"
+                            android:textColor="@color/text_primary_white"
+                            android:textColorHint="@color/text_hint_dim"
+                            android:textSize="15sp" />
+
+                        <TextView
+                            android:id="@+id/btnSaveAlias"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp"
+                            android:layout_gravity="end"
+                            android:layout_marginTop="10dp"
+                            android:background="@drawable/bg_button_cyan_pill"
+                            android:gravity="center"
+                            android:paddingHorizontal="18dp"
+                            android:text="Kaydet"
+                            android:textColor="@color/accent_cyan_dark_text"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <!-- Frequency Band Policy -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Kablosuz Frekans Müzakeresi (Wi-Fi Direct &amp; LAN)"
+                            android:textColor="@color/accent_cyan_bright"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvSettingsBandDetails"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:text="Otomatik Kademeli Geçiş Aktif:
+1) 6 GHz / 5 GHz (GROUP_OPERATING_BAND_AUTO / 5_GHZ)
+2) Hata durumunda 0ms gecikmeyle 2.4 GHz Fallback
+3) Aynı Wi-Fi / Hotspot üzerinde NSD + UDP Doğrudan Akış"
+                            android:textColor="@color/text_secondary_muted"
+                            android:textSize="13sp" />
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switchPrefer5Ghz"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:checked="true"
+                            android:text="Önce 5 GHz / 6 GHz Dene (Desteklenmezse 2.4 GHz)"
+                            android:textColor="@color/text_primary_white" />
+                    </LinearLayout>
+
+                    <!-- Zero-Copy & %5 Partial Preservation Info -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:background="@drawable/bg_card_nearby"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Zero-Copy &amp; %5 Kısmi Dosya Koruma Motoru"
+                            android:textColor="@color/accent_cyan_bright"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:text="• Hedef Klasör: /storage/emulated/0/Download (Orijinal Uzantı)
+• Soket Tamponu: SO_SNDBUF=8MB, SO_RCVBUF=8MB, TCP_NODELAY=true
+• İptal / Kopma Kuralı: Dosya ASLA silinmez; posix_fallocate sonrası gerçek boyuta truncate() + fsync() yapılır ve anında oynatılabilir."
+                            android:textColor="@color/text_secondary_muted"
+                            android:textSize="13sp" />
+                    </LinearLayout>
+
+                </LinearLayout>
+            </ScrollView>
+
+        </FrameLayout>
+
+        <!-- ========================================================= -->
+        <!-- BOTTOM NAVIGATION BAR (Video 00:02 - 00:40: Alım, Gönder, Ayarlar) -->
+        <!-- ========================================================= -->
+        <LinearLayout
+            android:id="@+id/bottomNavBar"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:background="@color/bg_bottom_nav"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:weightSum="3">
+
+            <!-- Nav Item 1: Alım -->
+            <LinearLayout
+                android:id="@+id/navItemReceive"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/pillReceive"
+                    android:layout_width="64dp"
+                    android:layout_height="32dp"
+                    android:background="@drawable/bg_nav_pill">
+
+                    <ImageView
+                        android:id="@+id/ivNavReceive"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_wifi_receive"
+                        app:tint="@color/text_primary_white" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/tvNavReceive"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/tab_receive"
+                    android:textColor="@color/text_primary_white"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Nav Item 2: Gönder -->
+            <LinearLayout
+                android:id="@+id/navItemSend"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/pillSend"
+                    android:layout_width="64dp"
+                    android:layout_height="32dp">
+
+                    <ImageView
+                        android:id="@+id/ivNavSend"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_send_plane"
+                        app:tint="@color/text_secondary_muted" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/tvNavSend"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/tab_send"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <!-- Nav Item 3: Ayarlar -->
+            <LinearLayout
+                android:id="@+id/navItemSettings"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/pillSettings"
+                    android:layout_width="64dp"
+                    android:layout_height="32dp">
+
+                    <ImageView
+                        android:id="@+id/ivNavSettings"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_settings_gear"
+                        app:tint="@color/text_secondary_muted" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/tvNavSettings"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/tab_settings"
+                    android:textColor="@color/text_secondary_muted"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- ========================================================= -->
+    <!-- SPLASH OVERLAY (Video 00:00 - 00:01 Pure Black + Teal Ring) -->
+    <!-- ========================================================= -->
+    <FrameLayout
+        android:id="@+id/splashOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg_splash_black"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="visible">
+
+        <com.fasttransfer.p2p.ui.RadarPulseView
+            android:id="@+id/radarPulseSplash"
+            android:layout_width="128dp"
+            android:layout_height="128dp"
+            android:layout_gravity="center" />
+    </FrameLayout>
+
+</FrameLayout>

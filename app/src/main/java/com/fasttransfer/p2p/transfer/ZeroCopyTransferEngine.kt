@@ -1,16 +1,21 @@
 package com.fasttransfer.p2p.transfer
 
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.Process
 import android.system.Os
 import com.fasttransfer.p2p.model.IncomingTransferRequest
+import com.fasttransfer.p2p.model.P2pGroupCredentials
 import com.fasttransfer.p2p.model.TransferHistoryRecord
 import com.fasttransfer.p2p.model.TransferItem
 import com.fasttransfer.p2p.model.TransferProgress
 import com.fasttransfer.p2p.model.TransferStatus
+import com.fasttransfer.p2p.util.CompatibilityHelper
 import com.fasttransfer.p2p.util.StorageHelper
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,6 +23,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -34,14 +41,20 @@ import java.nio.channels.FileChannel
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 import java.util.Collections
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class ZeroCopyTransferEngine(
     private val context: Context,
     private val getLocalAlias: () -> String,
     private val getLocalDeviceModel: () -> String,
+    private val onPrepareP2pGroup: () -> P2pGroupCredentials?,
+    private val onJoinP2pGroup: (P2pGroupCredentials) -> Boolean,
+    private val isHighBandUpgradeEnabled: () -> Boolean,
     private val transferPort: Int = 53317,
     private val httpLinkPort: Int = 53319,
     private val onIncomingConsentRequest: (IncomingTransferRequest) -> Unit,
@@ -52,8 +65,10 @@ class ZeroCopyTransferEngine(
     companion object {
         const val SOCKET_BUFFER_BYTES = 16 * 1024 * 1024 // 16 MB Kernel TCP Window
         const val DIRECT_BUFFER_BYTES = 8 * 1024 * 1024 // 8 MB Direct Off-Heap DMA Buffer
-        const val ZERO_COPY_SLICE_BYTES = 4L * 1024L * 1024L // 4 MB per kernel sendfile64/transferTo slice
-        private const val PROTOCOL_MAGIC = 0x5A455035 // "ZEP5"
+        const val PIPELINE_BUFFER_BYTES = 4 * 1024 * 1024 // 4 MB x 4 Ring Buffers for Dual-Core Pipeline
+        const val ZERO_COPY_SLICE_BYTES = 16L * 1024L * 1024L // 16 MB per kernel sendfile64/transferTo slice
+        private const val PROTOCOL_MAGIC = 0x5A455038 // "ZEP8" Control & Handshake Channel
+        private const val PROTOCOL_MAGIC_TURBO_DATA = 0x5A455054 // "ZEPT" Dedicated 5GHz/6GHz P2P Data Channel
         private const val DECISION_ACCEPTED: Int = 1
         private const val DECISION_REJECTED: Int = 2
     }
@@ -62,6 +77,9 @@ class ZeroCopyTransferEngine(
     private var serverJob: Job? = null
     private var httpServerJob: Job? = null
     private var activeTransferJob: Job? = null
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private val isPaused = AtomicBoolean(false)
 
@@ -75,7 +93,18 @@ class ZeroCopyTransferEngine(
     private var activeSenderChannel: SocketChannel? = null
 
     @Volatile
+    private var activeSenderTurboChannel: SocketChannel? = null
+
+    @Volatile
     private var activeReceiverChannel: SocketChannel? = null
+
+    @Volatile
+    private var activeReceiverTurboChannel: SocketChannel? = null
+
+    private val pendingTurboChannelRef = AtomicReference<SocketChannel?>(null)
+
+    @Volatile
+    private var pendingTurboLatch: CountDownLatch? = null
 
     @Volatile
     private var activeConsentLatch: CountDownLatch? = null
@@ -108,6 +137,52 @@ class ZeroCopyTransferEngine(
     fun isCurrentlyPaused(): Boolean = isPaused.get()
 
     /**
+     * Acquires CPU WakeLock and Low-Latency Wi-Fi Lock directly inside the process
+     * without displaying any annoying foreground notification to the user.
+     */
+    private fun acquireInProcessHardwareLocks() {
+        try {
+            val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && wakeLock == null) {
+                wakeLock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "Zeph::DirectTransferWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire(20 * 60 * 1000L)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm != null && wifiLock == null) {
+                wifiLock = wm.createWifiLock(
+                    CompatibilityHelper.getOptimalWifiLockMode(),
+                    "Zeph::DirectTransferWifiLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun releaseInProcessHardwareLocks() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+        } catch (_: Throwable) {
+        }
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+            wifiLock = null
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
      * Called ONLY when the user explicitly taps "İptal et" / "Kapat":
      * Immediately sends TCP RST via SO_LINGER(true, 0) and wakes up any blocked channel in <15ms.
      */
@@ -115,14 +190,21 @@ class ZeroCopyTransferEngine(
         currentCancelFlag.set(true)
         isPaused.set(false)
         activeConsentLatch?.countDown()
+        pendingTurboLatch?.countDown()
 
         val sChan = activeSenderChannel
+        val sTurbo = activeSenderTurboChannel
         val rChan = activeReceiverChannel
+        val rTurbo = activeReceiverTurboChannel
         activeSenderChannel = null
+        activeSenderTurboChannel = null
         activeReceiverChannel = null
+        activeReceiverTurboChannel = null
 
         scope.launch {
+            abortChannelWithRst(sTurbo)
             abortChannelWithRst(sChan)
+            abortChannelWithRst(rTurbo)
             abortChannelWithRst(rChan)
         }
     }
@@ -155,9 +237,6 @@ class ZeroCopyTransferEngine(
         }
     }
 
-    /**
-     * Graceful close used when a transfer completes normally so the kernel flushes every last byte in SO_SNDBUF!
-     */
     private fun closeChannelGracefully(ch: SocketChannel?) {
         if (ch == null) return
         try {
@@ -170,6 +249,10 @@ class ZeroCopyTransferEngine(
         }
     }
 
+    /**
+     * Configures 16 MB Kernel TCP Windows + TCP_NODELAY + WMM AC_VI Video Queue (0xA0)
+     * for maximum 802.11ac/ax TXOP frame bursting and A-MPDU aggregation.
+     */
     private fun configureChannelSocketBuffers(channel: SocketChannel) {
         try {
             val socket = channel.socket()
@@ -177,7 +260,8 @@ class ZeroCopyTransferEngine(
             socket.keepAlive = true
             socket.sendBufferSize = SOCKET_BUFFER_BYTES
             socket.receiveBufferSize = SOCKET_BUFFER_BYTES
-            socket.trafficClass = 0x08 // IPTOS_THROUGHPUT
+            // 0xA0 (DSCP CS5 -> UP=5 -> 802.11e WMM AC_VI High-Priority Video TXOP Burst Queue!)
+            socket.trafficClass = 0xA0
         } catch (_: Throwable) {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -207,7 +291,7 @@ class ZeroCopyTransferEngine(
                     while (isActive) {
                         val clientChannel = serverChannel.accept() ?: continue
                         scope.launch {
-                            handleIncomingClientChannel(clientChannel)
+                            dispatchIncomingChannel(clientChannel)
                         }
                     }
                 } catch (_: Throwable) {
@@ -222,7 +306,35 @@ class ZeroCopyTransferEngine(
         }
     }
 
-    private fun handleIncomingClientChannel(clientChannel: SocketChannel) {
+    private fun dispatchIncomingChannel(clientChannel: SocketChannel) {
+        try {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            clientChannel.configureBlocking(true)
+            configureChannelSocketBuffers(clientChannel)
+
+            val dis = DataInputStream(clientChannel.socket().getInputStream())
+            val magic = dis.readInt()
+            if (magic == PROTOCOL_MAGIC_TURBO_DATA) {
+                // Dedicated 5 GHz / 6 GHz P2P Data Channel arrived!
+                val old = pendingTurboChannelRef.getAndSet(clientChannel)
+                if (old != null && old !== clientChannel) {
+                    closeChannelGracefully(old)
+                }
+                pendingTurboLatch?.countDown()
+                return
+            }
+            if (magic != PROTOCOL_MAGIC) {
+                clientChannel.close()
+                return
+            }
+            handleIncomingClientChannel(clientChannel, dis)
+        } catch (_: Throwable) {
+            closeChannelGracefully(clientChannel)
+        }
+    }
+
+    private fun handleIncomingClientChannel(clientChannel: SocketChannel, dis: DataInputStream) {
+        abortChannelWithRst(activeReceiverTurboChannel)
         abortChannelWithRst(activeReceiverChannel)
 
         val sessionCancel = AtomicBoolean(false)
@@ -230,26 +342,17 @@ class ZeroCopyTransferEngine(
         activeReceiverChannel = clientChannel
         isPaused.set(false)
 
-        try {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            clientChannel.configureBlocking(true)
-            configureChannelSocketBuffers(clientChannel)
+        var dataChannel: SocketChannel = clientChannel
 
+        try {
             val socket = clientChannel.socket()
             val senderIp = socket.inetAddress?.hostAddress ?: "Bilinmeyen IP"
-            val dis = DataInputStream(socket.getInputStream())
             val dos = DataOutputStream(socket.getOutputStream())
-
-            val magic = dis.readInt()
-            if (magic != PROTOCOL_MAGIC) {
-                clientChannel.close()
-                return
-            }
 
             // 1. Read Handshake Metadata
             val senderAlias = dis.readUTF()
-            val senderModel = dis.readUTF().ifBlank { "Samsung" }
-            val transportLabel = dis.readUTF().ifBlank { "Zero-Copy P2P" }
+            val senderModel = dis.readUTF().ifBlank { "Android" }
+            var transportLabel = dis.readUTF().ifBlank { "Zero-Copy P2P" }
             val fileCount = dis.readInt()
             val totalBatchBytes = dis.readLong()
             val firstFileName = dis.readUTF()
@@ -260,7 +363,24 @@ class ZeroCopyTransferEngine(
                 previewLines.add(dis.readUTF())
             }
 
-            // 2. Ask Receiver User for Approval
+            // 2. If connected over a slow home router (not 192.168.49.x or 192.168.43.x),
+            // spin up the 5 GHz / 6 GHz Autonomous P2P Group in parallel while the user views the consent screen!
+            val isAlreadyDirectLink = senderIp.startsWith("192.168.49.") || senderIp.startsWith("192.168.43.")
+            val p2pGroupDeferred = CompletableDeferred<P2pGroupCredentials?>()
+            if (!isAlreadyDirectLink && isHighBandUpgradeEnabled()) {
+                scope.launch {
+                    try {
+                        val creds = onPrepareP2pGroup()
+                        p2pGroupDeferred.complete(creds)
+                    } catch (_: Throwable) {
+                        p2pGroupDeferred.complete(null)
+                    }
+                }
+            } else {
+                p2pGroupDeferred.complete(null)
+            }
+
+            // 3. Ask Receiver User for Approval
             var accepted = autoAcceptIncoming
             if (!accepted) {
                 val latch = CountDownLatch(1)
@@ -299,11 +419,59 @@ class ZeroCopyTransferEngine(
                 return
             }
 
-            dos.writeByte(DECISION_ACCEPTED)
-            dos.flush()
+            acquireInProcessHardwareLocks()
             onTransferActiveStateChanged(true)
 
-            val directBuf = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
+            // Wait up to 1.6s if the 5 GHz P2P Group is finishing creation right as the user tapped Accept
+            val p2pCreds: P2pGroupCredentials? = runBlocking {
+                withTimeoutOrNull(1600L) {
+                    p2pGroupDeferred.await()
+                }
+            }
+
+            val turboLatch = CountDownLatch(1)
+            pendingTurboChannelRef.set(null)
+            pendingTurboLatch = turboLatch
+
+            dos.writeByte(DECISION_ACCEPTED)
+            if (p2pCreds != null && !isAlreadyDirectLink) {
+                dos.writeBoolean(true)
+                dos.writeUTF(p2pCreds.ssid)
+                dos.writeUTF(p2pCreds.passphrase)
+                dos.writeUTF(p2pCreds.ownerIp)
+                dos.writeInt(p2pCreds.freqMhz)
+                dos.writeUTF(p2pCreds.bandLabel)
+                dos.flush()
+
+                // Wait for Sender to confirm whether it switched to the 5 GHz Turbo P2P Socket
+                val switchedToTurbo = try {
+                    socket.soTimeout = 7000
+                    dis.readBoolean()
+                } catch (_: Throwable) {
+                    false
+                } finally {
+                    try {
+                        socket.soTimeout = 0
+                    } catch (_: Throwable) {
+                    }
+                }
+
+                if (switchedToTurbo) {
+                    turboLatch.await(3500L, TimeUnit.MILLISECONDS)
+                    val turboChan = pendingTurboChannelRef.getAndSet(null)
+                    if (turboChan != null) {
+                        activeReceiverTurboChannel = turboChan
+                        dataChannel = turboChan
+                        transportLabel = p2pCreds.bandLabel
+                    }
+                }
+            } else {
+                dos.writeBoolean(false)
+                dos.flush()
+            }
+            pendingTurboLatch = null
+
+            val singleDirectBuf = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
 
             for (fileIdx in 0 until fileCount) {
                 if (sessionCancel.get()) break
@@ -312,7 +480,7 @@ class ZeroCopyTransferEngine(
                 val expectedFileSize = dis.readLong()
 
                 val targetFile: File = StorageHelper.createDirectDownloadTarget(context, fileName)
-                var totalBytesReceived = 0L
+                val totalBytesReceivedAtomic = AtomicLong(0L)
                 val startTimeNs = System.nanoTime()
                 val startWallMs = System.currentTimeMillis()
                 var lastUiUpdateMs = 0L
@@ -333,81 +501,201 @@ class ZeroCopyTransferEngine(
 
                     fileChannel.position(0L)
 
-                    while (totalBytesReceived < expectedFileSize && !sessionCancel.get()) {
-                        while (isPaused.get() && !sessionCancel.get()) {
-                            onProgressUpdate(
-                                TransferProgress(
-                                    fileName = targetFile.name,
-                                    fileIndex = fileIdx,
-                                    totalFiles = fileCount,
-                                    bytesTransferred = totalBytesReceived,
-                                    totalBytes = expectedFileSize,
-                                    speedMbps = 0.0,
-                                    etaSeconds = 0L,
-                                    elapsedMillis = System.currentTimeMillis() - startWallMs,
-                                    status = TransferStatus.PAUSED,
-                                    transportLabel = transportLabel,
-                                    isSending = false,
-                                    savedFilePath = targetFile.absolutePath,
-                                    message = "Transfer Duraklatıldı"
+                    if (expectedFileSize > 16L * 1024L * 1024L) {
+                        // DUAL-CORE PIPELINED OFF-HEAP DIRECT BUFFER ENGINE FOR LARGE FILES:
+                        // Core 1 continuously reads from the 5GHz/6GHz socket into 4x4MB DirectByteBuffers
+                        // while Core 2 simultaneously writes filled DirectByteBuffers to UFS storage!
+                        val poolCount = 4
+                        val freePool = ArrayBlockingQueue<ByteBuffer>(poolCount)
+                        val writeQueue = ArrayBlockingQueue<ByteBuffer>(poolCount + 1)
+                        val poisonPill = ByteBuffer.allocate(0)
+                        for (i in 0 until poolCount) {
+                            freePool.put(ByteBuffer.allocateDirect(PIPELINE_BUFFER_BYTES))
+                        }
+
+                        val writerError = AtomicBoolean(false)
+                        val fc = fileChannel
+                        val writerThread = Thread {
+                            try {
+                                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+                                while (!sessionCancel.get()) {
+                                    val buf = writeQueue.take()
+                                    if (buf === poisonPill) break
+                                    while (buf.hasRemaining() && !sessionCancel.get()) {
+                                        val written = fc.write(buf)
+                                        if (written > 0) {
+                                            totalBytesReceivedAtomic.addAndGet(written.toLong())
+                                        }
+                                    }
+                                    buf.clear()
+                                    freePool.offer(buf)
+
+                                    val doneBytes = totalBytesReceivedAtomic.get()
+                                    val nowMs = System.currentTimeMillis()
+                                    if (nowMs - lastUiUpdateMs >= 130L || doneBytes == expectedFileSize) {
+                                        lastUiUpdateMs = nowMs
+                                        val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                                        val speedMbps = (doneBytes / (1024.0 * 1024.0)) / elapsedSec
+                                        val remainingBytes = (expectedFileSize - doneBytes).coerceAtLeast(0L)
+                                        val etaSec = if (speedMbps > 0.01) {
+                                            ((remainingBytes / (1024.0 * 1024.0)) / speedMbps).toLong()
+                                        } else {
+                                            0L
+                                        }
+                                        onProgressUpdate(
+                                            TransferProgress(
+                                                fileName = targetFile.name,
+                                                fileIndex = fileIdx,
+                                                totalFiles = fileCount,
+                                                bytesTransferred = doneBytes,
+                                                totalBytes = expectedFileSize,
+                                                speedMbps = speedMbps,
+                                                etaSeconds = etaSec,
+                                                elapsedMillis = nowMs - startWallMs,
+                                                status = TransferStatus.TRANSFERRING,
+                                                transportLabel = transportLabel,
+                                                isSending = false,
+                                                savedFilePath = targetFile.absolutePath
+                                            )
+                                        )
+                                    }
+                                }
+                            } catch (_: Throwable) {
+                                writerError.set(true)
+                            }
+                        }.apply {
+                            name = "Zeph-UFS-DiskWriter"
+                            start()
+                        }
+
+                        var totalNetworkRead = 0L
+                        try {
+                            while (totalNetworkRead < expectedFileSize && !sessionCancel.get() && !writerError.get()) {
+                                while (isPaused.get() && !sessionCancel.get()) {
+                                    onProgressUpdate(
+                                        TransferProgress(
+                                            fileName = targetFile.name,
+                                            fileIndex = fileIdx,
+                                            totalFiles = fileCount,
+                                            bytesTransferred = totalBytesReceivedAtomic.get(),
+                                            totalBytes = expectedFileSize,
+                                            speedMbps = 0.0,
+                                            etaSeconds = 0L,
+                                            elapsedMillis = System.currentTimeMillis() - startWallMs,
+                                            status = TransferStatus.PAUSED,
+                                            transportLabel = transportLabel,
+                                            isSending = false,
+                                            savedFilePath = targetFile.absolutePath,
+                                            message = "Transfer Duraklatıldı"
+                                        )
+                                    )
+                                    Thread.sleep(100L)
+                                }
+                                if (sessionCancel.get()) break
+
+                                val buf = freePool.poll(200L, TimeUnit.MILLISECONDS) ?: continue
+                                buf.clear()
+                                val rem = expectedFileSize - totalNetworkRead
+                                if (rem < buf.capacity()) {
+                                    buf.limit(rem.toInt())
+                                }
+
+                                val bytesRead = dataChannel.read(buf)
+                                if (bytesRead < 0) {
+                                    freePool.offer(buf)
+                                    break
+                                }
+                                if (bytesRead == 0) {
+                                    freePool.offer(buf)
+                                    continue
+                                }
+
+                                totalNetworkRead += bytesRead
+                                buf.flip()
+                                writeQueue.put(buf)
+                            }
+                        } finally {
+                            writeQueue.offer(poisonPill, 2L, TimeUnit.SECONDS)
+                            try {
+                                writerThread.join(4000L)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    } else {
+                        // Direct Single-Buffer fast path for files <= 16 MB
+                        while (totalBytesReceivedAtomic.get() < expectedFileSize && !sessionCancel.get()) {
+                            while (isPaused.get() && !sessionCancel.get()) {
+                                onProgressUpdate(
+                                    TransferProgress(
+                                        fileName = targetFile.name,
+                                        fileIndex = fileIdx,
+                                        totalFiles = fileCount,
+                                        bytesTransferred = totalBytesReceivedAtomic.get(),
+                                        totalBytes = expectedFileSize,
+                                        speedMbps = 0.0,
+                                        etaSeconds = 0L,
+                                        elapsedMillis = System.currentTimeMillis() - startWallMs,
+                                        status = TransferStatus.PAUSED,
+                                        transportLabel = transportLabel,
+                                        isSending = false,
+                                        savedFilePath = targetFile.absolutePath,
+                                        message = "Transfer Duraklatıldı"
+                                    )
                                 )
-                            )
-                            Thread.sleep(100L)
-                        }
-                        if (sessionCancel.get()) break
+                                Thread.sleep(100L)
+                            }
+                            if (sessionCancel.get()) break
 
-                        directBuf.clear()
-                        val remaining = expectedFileSize - totalBytesReceived
-                        if (remaining < directBuf.capacity()) {
-                            directBuf.limit(remaining.toInt())
-                        }
-
-                        val bytesRead = clientChannel.read(directBuf)
-                        if (bytesRead < 0) {
-                            break
-                        }
-                        if (bytesRead == 0) {
-                            continue
-                        }
-
-                        directBuf.flip()
-                        while (directBuf.hasRemaining()) {
-                            totalBytesReceived += fileChannel.write(directBuf)
-                        }
-
-                        val nowMs = System.currentTimeMillis()
-                        if (nowMs - lastUiUpdateMs >= 140L || totalBytesReceived == expectedFileSize) {
-                            lastUiUpdateMs = nowMs
-                            val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
-                            val speedMbps = (totalBytesReceived / (1024.0 * 1024.0)) / elapsedSec
-                            val remainingBytes = (expectedFileSize - totalBytesReceived).coerceAtLeast(0L)
-                            val etaSec = if (speedMbps > 0.01) {
-                                ((remainingBytes / (1024.0 * 1024.0)) / speedMbps).toLong()
-                            } else {
-                                0L
+                            singleDirectBuf.clear()
+                            val remaining = expectedFileSize - totalBytesReceivedAtomic.get()
+                            if (remaining < singleDirectBuf.capacity()) {
+                                singleDirectBuf.limit(remaining.toInt())
                             }
 
-                            onProgressUpdate(
-                                TransferProgress(
-                                    fileName = targetFile.name,
-                                    fileIndex = fileIdx,
-                                    totalFiles = fileCount,
-                                    bytesTransferred = totalBytesReceived,
-                                    totalBytes = expectedFileSize,
-                                    speedMbps = speedMbps,
-                                    etaSeconds = etaSec,
-                                    elapsedMillis = nowMs - startWallMs,
-                                    status = TransferStatus.TRANSFERRING,
-                                    transportLabel = transportLabel,
-                                    isSending = false,
-                                    savedFilePath = targetFile.absolutePath
+                            val bytesRead = dataChannel.read(singleDirectBuf)
+                            if (bytesRead < 0) break
+                            if (bytesRead == 0) continue
+
+                            singleDirectBuf.flip()
+                            while (singleDirectBuf.hasRemaining()) {
+                                totalBytesReceivedAtomic.addAndGet(fileChannel.write(singleDirectBuf).toLong())
+                            }
+
+                            val doneBytes = totalBytesReceivedAtomic.get()
+                            val nowMs = System.currentTimeMillis()
+                            if (nowMs - lastUiUpdateMs >= 130L || doneBytes == expectedFileSize) {
+                                lastUiUpdateMs = nowMs
+                                val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                                val speedMbps = (doneBytes / (1024.0 * 1024.0)) / elapsedSec
+                                val remainingBytes = (expectedFileSize - doneBytes).coerceAtLeast(0L)
+                                val etaSec = if (speedMbps > 0.01) {
+                                    ((remainingBytes / (1024.0 * 1024.0)) / speedMbps).toLong()
+                                } else {
+                                    0L
+                                }
+
+                                onProgressUpdate(
+                                    TransferProgress(
+                                        fileName = targetFile.name,
+                                        fileIndex = fileIdx,
+                                        totalFiles = fileCount,
+                                        bytesTransferred = doneBytes,
+                                        totalBytes = expectedFileSize,
+                                        speedMbps = speedMbps,
+                                        etaSeconds = etaSec,
+                                        elapsedMillis = nowMs - startWallMs,
+                                        status = TransferStatus.TRANSFERRING,
+                                        transportLabel = transportLabel,
+                                        isSending = false,
+                                        savedFilePath = targetFile.absolutePath
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 } catch (_: Throwable) {
                 } finally {
-                    // Seal file on disk: truncate if partial, force(true) fsync, and notify MediaScanner
+                    val totalBytesReceived = totalBytesReceivedAtomic.get()
                     try {
                         if (fileChannel != null && fileChannel.isOpen) {
                             if (totalBytesReceived >= 0L && totalBytesReceived < expectedFileSize) {
@@ -426,9 +714,7 @@ class ZeroCopyTransferEngine(
                     } catch (_: Throwable) {
                     }
 
-                    // CRITICAL EOF ACK HANDSHAKE:
-                    // Send the exact received byte count back to Sender so Sender knows 100% of bytes
-                    // have arrived on disk before Sender closes the socket!
+                    // CRITICAL EOF ACK HANDSHAKE over the control socket
                     if (!sessionCancel.get() && totalBytesReceived == expectedFileSize) {
                         try {
                             dos.writeLong(totalBytesReceived)
@@ -484,13 +770,18 @@ class ZeroCopyTransferEngine(
             }
         } catch (_: Throwable) {
         } finally {
+            releaseInProcessHardwareLocks()
             onTransferActiveStateChanged(false)
             if (activeReceiverChannel === clientChannel) {
                 activeReceiverChannel = null
             }
+            val turboChan = activeReceiverTurboChannel
+            activeReceiverTurboChannel = null
             if (sessionCancel.get()) {
+                abortChannelWithRst(turboChan)
                 abortChannelWithRst(clientChannel)
             } else {
+                closeChannelGracefully(turboChan)
                 closeChannelGracefully(clientChannel)
             }
         }
@@ -503,6 +794,7 @@ class ZeroCopyTransferEngine(
     ) {
         if (items.isEmpty() || targetHostIps.isEmpty()) return
 
+        abortChannelWithRst(activeSenderTurboChannel)
         abortChannelWithRst(activeSenderChannel)
         activeTransferJob?.cancel()
 
@@ -512,6 +804,7 @@ class ZeroCopyTransferEngine(
 
         activeTransferJob = scope.launch {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            acquireInProcessHardwareLocks()
             onTransferActiveStateChanged(true)
             try {
                 for ((hostIp, port) in targetHostIps) {
@@ -519,6 +812,7 @@ class ZeroCopyTransferEngine(
                     sendItemsToSinglePeer(items, hostIp, port, transportLabel, sessionCancel)
                 }
             } finally {
+                releaseInProcessHardwareLocks()
                 onTransferActiveStateChanged(false)
             }
         }
@@ -528,10 +822,13 @@ class ZeroCopyTransferEngine(
         items: List<TransferItem>,
         hostIp: String,
         port: Int,
-        transportLabel: String,
+        initialTransportLabel: String,
         sessionCancel: AtomicBoolean
     ) {
-        var socketChannel: SocketChannel? = null
+        var controlChannel: SocketChannel? = null
+        var turboDataChannel: SocketChannel? = null
+        var transportLabel = initialTransportLabel
+
         try {
             val totalBatchBytes = items.sumOf { it.sizeBytes }
             val firstItem = items.first()
@@ -552,14 +849,15 @@ class ZeroCopyTransferEngine(
                 )
             )
 
-            socketChannel = SocketChannel.open()
-            activeSenderChannel = socketChannel
-            socketChannel.configureBlocking(true)
-            configureChannelSocketBuffers(socketChannel)
-            socketChannel.socket().connect(InetSocketAddress(hostIp, port), 5000)
+            controlChannel = SocketChannel.open()
+            activeSenderChannel = controlChannel
+            controlChannel.configureBlocking(true)
+            configureChannelSocketBuffers(controlChannel)
+            CompatibilityHelper.bindSocketToOptimalInterface(context, controlChannel.socket(), hostIp)
+            controlChannel.socket().connect(InetSocketAddress(hostIp, port), 5000)
 
-            val dos = DataOutputStream(socketChannel.socket().getOutputStream())
-            val dis = DataInputStream(socketChannel.socket().getInputStream())
+            val dos = DataOutputStream(controlChannel.socket().getOutputStream())
+            val dis = DataInputStream(controlChannel.socket().getInputStream())
 
             // 1. Send Handshake Metadata & Wait for Receiver's Approval
             dos.writeInt(PROTOCOL_MAGIC)
@@ -616,6 +914,77 @@ class ZeroCopyTransferEngine(
                 return
             }
 
+            // 2. Check if Receiver offered an Automatic 5 GHz / 6 GHz Direct P2P Bridge Upgrade!
+            val hasP2pUpgrade = dis.readBoolean()
+            var dataChannel: SocketChannel = controlChannel
+
+            if (hasP2pUpgrade && !sessionCancel.get()) {
+                val p2pSsid = dis.readUTF()
+                val p2pPwd = dis.readUTF()
+                val p2pOwnerIp = dis.readUTF()
+                val p2pFreq = dis.readInt()
+                val p2pLabel = dis.readUTF()
+
+                onProgressUpdate(
+                    TransferProgress(
+                        fileName = firstItem.name,
+                        fileIndex = 0,
+                        totalFiles = items.size,
+                        bytesTransferred = 0L,
+                        totalBytes = totalBatchBytes,
+                        speedMbps = 0.0,
+                        etaSeconds = 0L,
+                        elapsedMillis = 0L,
+                        status = TransferStatus.CONNECTING,
+                        transportLabel = p2pLabel,
+                        isSending = true,
+                        message = "Otomatik $p2pLabel tüneline geçiliyor..."
+                    )
+                )
+
+                val creds = P2pGroupCredentials(
+                    ssid = p2pSsid,
+                    passphrase = p2pPwd,
+                    ownerIp = p2pOwnerIp,
+                    freqMhz = p2pFreq,
+                    bandLabel = p2pLabel
+                )
+
+                val joinedP2p = onJoinP2pGroup(creds)
+                var connectedTurbo: SocketChannel? = null
+                if (joinedP2p && !sessionCancel.get()) {
+                    for (attempt in 0 until 12) {
+                        if (sessionCancel.get()) break
+                        try {
+                            val candidate = SocketChannel.open()
+                            candidate.configureBlocking(true)
+                            configureChannelSocketBuffers(candidate)
+                            CompatibilityHelper.bindSocketToOptimalInterface(context, candidate.socket(), p2pOwnerIp)
+                            candidate.socket().connect(InetSocketAddress(p2pOwnerIp, port), 1200)
+                            val turboOut = DataOutputStream(candidate.socket().getOutputStream())
+                            turboOut.writeInt(PROTOCOL_MAGIC_TURBO_DATA)
+                            turboOut.flush()
+                            connectedTurbo = candidate
+                            break
+                        } catch (_: Throwable) {
+                            Thread.sleep(180L)
+                        }
+                    }
+                }
+
+                if (connectedTurbo != null) {
+                    turboDataChannel = connectedTurbo
+                    activeSenderTurboChannel = connectedTurbo
+                    dataChannel = connectedTurbo
+                    transportLabel = p2pLabel
+                    dos.writeBoolean(true)
+                    dos.flush()
+                } else {
+                    dos.writeBoolean(false)
+                    dos.flush()
+                }
+            }
+
             val fallbackDirectBuffer = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
 
             for ((fileIdx, item) in items.withIndex()) {
@@ -646,6 +1015,7 @@ class ZeroCopyTransferEngine(
                         continue
                     }
 
+                    // File metadata is sent on the control channel, while raw file payload streams over dataChannel!
                     dos.writeUTF(item.name)
                     dos.writeLong(actualSize)
                     dos.flush()
@@ -658,7 +1028,7 @@ class ZeroCopyTransferEngine(
                     if (item.inlineTextBytes != null) {
                         val buf = ByteBuffer.wrap(item.inlineTextBytes)
                         while (buf.hasRemaining() && !sessionCancel.get()) {
-                            bytesSent += socketChannel.write(buf)
+                            bytesSent += dataChannel.write(buf)
                         }
                     } else if (fileChannel != null) {
                         var zeroCopySupported = true
@@ -687,7 +1057,7 @@ class ZeroCopyTransferEngine(
                             if (zeroCopySupported) {
                                 try {
                                     val count = (actualSize - bytesSent).coerceAtMost(ZERO_COPY_SLICE_BYTES)
-                                    val transferred = fileChannel.transferTo(bytesSent, count, socketChannel)
+                                    val transferred = fileChannel.transferTo(bytesSent, count, dataChannel)
                                     if (transferred > 0L) {
                                         bytesSent += transferred
                                     } else {
@@ -709,14 +1079,14 @@ class ZeroCopyTransferEngine(
                                 if (readCount <= 0) break
                                 fallbackDirectBuffer.flip()
                                 while (fallbackDirectBuffer.hasRemaining() && !sessionCancel.get()) {
-                                    val written = socketChannel.write(fallbackDirectBuffer)
+                                    val written = dataChannel.write(fallbackDirectBuffer)
                                     if (written <= 0) break
                                     bytesSent += written
                                 }
                             }
 
                             val nowMs = System.currentTimeMillis()
-                            if (nowMs - lastUiUpdateMs >= 140L) {
+                            if (nowMs - lastUiUpdateMs >= 130L) {
                                 lastUiUpdateMs = nowMs
                                 val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
                                 val speedMbps = (bytesSent / (1024.0 * 1024.0)) / elapsedSec
@@ -726,7 +1096,6 @@ class ZeroCopyTransferEngine(
                                 } else {
                                     0L
                                 }
-                                // Keep progress at 99% while the final SO_SNDBUF bytes are draining to Receiver disk!
                                 val reportedBytes = if (bytesSent >= actualSize) (actualSize - 1L).coerceAtLeast(0L) else bytesSent
                                 onProgressUpdate(
                                     TransferProgress(
@@ -747,13 +1116,11 @@ class ZeroCopyTransferEngine(
                         }
                     }
 
-                    // CRITICAL FIX FOR %94 PARTIAL DROP BUG:
-                    // Wait for Receiver to confirm all 100% of bytes have been flushed to Receiver's UFS storage
-                    // BEFORE closing the socket or finishing!
+                    // Wait for Receiver's 8-byte EOF_ACK confirmation
                     if (!sessionCancel.get() && bytesSent == actualSize) {
                         dos.flush()
                         try {
-                            socketChannel.socket().soTimeout = 30_000
+                            controlChannel.socket().soTimeout = 30_000
                             val confirmedByReceiver = dis.readLong()
                             if (confirmedByReceiver > 0L) {
                                 bytesSent = confirmedByReceiver
@@ -840,13 +1207,18 @@ class ZeroCopyTransferEngine(
                 )
             }
         } finally {
-            if (activeSenderChannel === socketChannel) {
+            if (activeSenderChannel === controlChannel) {
                 activeSenderChannel = null
             }
+            if (activeSenderTurboChannel === turboDataChannel) {
+                activeSenderTurboChannel = null
+            }
             if (sessionCancel.get()) {
-                abortChannelWithRst(socketChannel)
+                abortChannelWithRst(turboDataChannel)
+                abortChannelWithRst(controlChannel)
             } else {
-                closeChannelGracefully(socketChannel)
+                closeChannelGracefully(turboDataChannel)
+                closeChannelGracefully(controlChannel)
             }
         }
     }
@@ -975,6 +1347,7 @@ class ZeroCopyTransferEngine(
 
     fun stop() {
         cancelAndPreservePartialFile()
+        releaseInProcessHardwareLocks()
         activeTransferJob?.cancel()
         serverJob?.cancel()
         httpServerJob?.cancel()

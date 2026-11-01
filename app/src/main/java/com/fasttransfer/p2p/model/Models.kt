@@ -22,8 +22,8 @@ enum class DeviceCategory {
 }
 
 enum class ConnectionTransport(val label: String, val priority: Int) {
-    WIFI_DIRECT_AUTO("Doğrudan Köprü (6GHz / 5GHz / 2.4GHz)", 1),
-    LAN_HOTSPOT("Yerel Ağ / Wi-Fi", 2)
+    WIFI_DIRECT_AUTO("Doğrudan Köprü (6GHz / 5GHz)", 1),
+    LAN_HOTSPOT("Otomatik Yüksek Hızlı Köprü", 2)
 }
 
 enum class SendMode {
@@ -43,6 +43,14 @@ enum class TransferStatus {
     REJECTED,
     ERROR
 }
+
+data class P2pGroupCredentials(
+    val ssid: String,
+    val passphrase: String,
+    val ownerIp: String = "192.168.49.1",
+    val freqMhz: Int = 5180,
+    val bandLabel: String = "5 GHz Doğrudan Köprü"
+)
 
 data class TransferItem(
     val id: String,
@@ -72,6 +80,9 @@ data class PeerDevice(
     val category: DeviceCategory = DeviceCategory.PHONE,
     val transport: ConnectionTransport = ConnectionTransport.LAN_HOTSPOT,
     val isFavorite: Boolean = false,
+    val p2pSsid: String? = null,
+    val p2pPassphrase: String? = null,
+    val p2pFreqMhz: Int = 0,
     val lastSeenMs: Long = System.currentTimeMillis()
 )
 

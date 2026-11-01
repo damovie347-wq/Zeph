@@ -7,7 +7,9 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import com.fasttransfer.p2p.model.ConnectionTransport
 import com.fasttransfer.p2p.model.DeviceCategory
+import com.fasttransfer.p2p.model.P2pGroupCredentials
 import com.fasttransfer.p2p.model.PeerDevice
+import com.fasttransfer.p2p.util.CompatibilityHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
 class LanDiscoveryManager(
     private val context: Context,
     private val getLocalAlias: () -> String,
+    private val getLocalP2pGroup: () -> P2pGroupCredentials? = { null },
     private val transferPort: Int = 53317,
     private val discoveryUdpPort: Int = 53318,
     private val onLanPeersChanged: (List<PeerDevice>) -> Unit
@@ -42,10 +45,8 @@ class LanDiscoveryManager(
 
     private val SERVICE_TYPE = "_fasttransfer._tcp."
 
-    fun getLocalDeviceBrand(): String {
-        val brand = Build.MANUFACTURER?.trim().orEmpty()
-        if (brand.isEmpty()) return "Android"
-        return brand.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    fun getLocalDeviceModelName(): String {
+        return CompatibilityHelper.mapRawModelToFriendlyName(Build.MANUFACTURER, Build.MODEL)
     }
 
     fun start() {
@@ -106,20 +107,35 @@ class LanDiscoveryManager(
 
                         val payload = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         val json = JSONObject(payload)
-                        val alias = json.optString("alias", "Zeph Cihazı")
-                        val model = json.optString("model", "Samsung")
+                        val rawAlias = json.optString("alias", "").trim()
+                        val model = json.optString("model", "Android").trim().ifEmpty { "Android" }
                         val port = json.optInt("port", transferPort)
+                        val p2pSsid = json.optString("p2pSsid", "").takeIf { it.isNotBlank() }
+                        val p2pPwd = json.optString("p2pPwd", "").takeIf { it.isNotBlank() }
+                        val p2pFreq = json.optInt("p2pFreq", 0)
+
+                        val cleanAlias = if (!CompatibilityHelper.isPlaceholderDeviceName(rawAlias)) {
+                            rawAlias
+                        } else if (!CompatibilityHelper.isPlaceholderDeviceName(model)) {
+                            model
+                        } else {
+                            "Galaxy / Android (${senderIp.substringAfterLast('.')})"
+                        }
+
                         val transport = classifyTransportByIp(senderIp)
 
                         val peer = PeerDevice(
                             id = "ip_$senderIp",
-                            alias = alias,
+                            alias = cleanAlias,
                             deviceModel = model,
                             ipAddress = senderIp,
                             macAddress = null,
                             port = port,
                             category = DeviceCategory.PHONE,
                             transport = transport,
+                            p2pSsid = p2pSsid,
+                            p2pPassphrase = p2pPwd,
+                            p2pFreqMhz = p2pFreq,
                             lastSeenMs = System.currentTimeMillis()
                         )
                         peersByIp[senderIp] = peer
@@ -147,7 +163,22 @@ class LanDiscoveryManager(
             while (isActive) {
                 broadcastDiscoveryBeacon(isPing = true)
                 pruneStalePeers()
-                delay(2000L)
+                delay(1800L)
+            }
+        }
+    }
+
+    private fun buildBeaconJson(isPing: Boolean): JSONObject {
+        val creds = getLocalP2pGroup()
+        return JSONObject().apply {
+            put("alias", getLocalAlias())
+            put("model", getLocalDeviceModelName())
+            put("port", transferPort)
+            put("ping", isPing)
+            if (creds != null) {
+                put("p2pSsid", creds.ssid)
+                put("p2pPwd", creds.passphrase)
+                put("p2pFreq", creds.freqMhz)
             }
         }
     }
@@ -155,13 +186,7 @@ class LanDiscoveryManager(
     fun broadcastDiscoveryBeacon(isPing: Boolean = true) {
         scope.launch {
             try {
-                val json = JSONObject().apply {
-                    put("alias", getLocalAlias())
-                    put("model", getLocalDeviceBrand())
-                    put("port", transferPort)
-                    put("ping", isPing)
-                }
-                val bytes = json.toString().toByteArray(Charsets.UTF_8)
+                val bytes = buildBeaconJson(isPing).toString().toByteArray(Charsets.UTF_8)
                 DatagramSocket().use { sock ->
                     sock.broadcast = true
                     val targets = mutableSetOf(
@@ -193,13 +218,7 @@ class LanDiscoveryManager(
     fun sendUnicastAnnounce(targetIp: String) {
         scope.launch {
             try {
-                val json = JSONObject().apply {
-                    put("alias", getLocalAlias())
-                    put("model", getLocalDeviceBrand())
-                    put("port", transferPort)
-                    put("ping", false)
-                }
-                val bytes = json.toString().toByteArray(Charsets.UTF_8)
+                val bytes = buildBeaconJson(isPing = false).toString().toByteArray(Charsets.UTF_8)
                 DatagramSocket().use { sock ->
                     val packet = DatagramPacket(
                         bytes,
@@ -279,15 +298,20 @@ class LanDiscoveryManager(
                         val info = resolved ?: return
                         val hostIp = info.host?.hostAddress ?: return
                         if (isOwnLocalIp(hostIp)) return
-                        // Do not overwrite an already-verified UDP peer
                         if (peersByIp.containsKey(hostIp)) return
                         val rawName = info.serviceName
                             .removePrefix("Zeph_")
                             .removePrefix("FastTransfer_")
                             .replace("_", " ")
+                            .trim()
+                        val displayAlias = if (!CompatibilityHelper.isPlaceholderDeviceName(rawName)) {
+                            rawName
+                        } else {
+                            "Cihaz ($hostIp)"
+                        }
                         peersByIp[hostIp] = PeerDevice(
                             id = "ip_$hostIp",
-                            alias = rawName.ifBlank { "Cihaz ($hostIp)" },
+                            alias = displayAlias,
                             deviceModel = "Android",
                             ipAddress = hostIp,
                             macAddress = null,
@@ -327,8 +351,19 @@ class LanDiscoveryManager(
     }
 
     private fun notifyPeersUpdated() {
+        val rawList = peersByIp.values.toList()
+        // Disambiguate if two different IPs have the exact same model/alias name
+        val nameCounts = rawList.groupingBy { it.alias.lowercase() }.eachCount()
+        val disambiguated = rawList.map { peer ->
+            if ((nameCounts[peer.alias.lowercase()] ?: 0) > 1 && !peer.ipAddress.isNullOrBlank()) {
+                val suffix = peer.ipAddress.substringAfterLast('.')
+                peer.copy(alias = "${peer.alias} (#$suffix)")
+            } else {
+                peer
+            }
+        }
         onLanPeersChanged(
-            peersByIp.values.sortedWith(
+            disambiguated.sortedWith(
                 compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias }
             )
         )

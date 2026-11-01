@@ -56,8 +56,30 @@ class LanDiscoveryManager(
         startNsdRegistrationAndDiscovery()
     }
 
+    /**
+     * Immediately removes stale 192.168.49.x peers when Wi-Fi Direct disconnects
+     * so dead entries never linger on screen for 12 seconds!
+     */
+    fun removePeersByPrefix(ipPrefix: String) {
+        var changed = false
+        val iterator = peersByIp.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (!entry.value.isFavorite && entry.key.startsWith(ipPrefix)) {
+                iterator.remove()
+                changed = true
+            }
+        }
+        if (changed) {
+            notifyPeersUpdated()
+        }
+    }
+
     private fun classifyTransportByIp(ip: String): ConnectionTransport {
-        return if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) {
+        return if (ip.startsWith("192.168.49.") ||
+            ip.startsWith("192.168.43.") ||
+            CompatibilityHelper.isAlreadyDirectOrHotspotConnection(context, ip)
+        ) {
             ConnectionTransport.WIFI_DIRECT_AUTO
         } else {
             ConnectionTransport.LAN_HOTSPOT
@@ -337,10 +359,16 @@ class LanDiscoveryManager(
     private fun pruneStalePeers() {
         val now = System.currentTimeMillis()
         var changed = false
+        val p2pInterfaceActive = CompatibilityHelper.getLocalP2pInterfaceIp() != null
         val iterator = peersByIp.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (!entry.value.isFavorite && now - entry.value.lastSeenMs > 12_000L) {
+            if (entry.value.isFavorite) continue
+            // If 192.168.49.x interface is down, prune 192.168.49.x peers immediately!
+            if (entry.key.startsWith("192.168.49.") && !p2pInterfaceActive) {
+                iterator.remove()
+                changed = true
+            } else if (now - entry.value.lastSeenMs > 8_000L) {
                 iterator.remove()
                 changed = true
             }
@@ -352,7 +380,6 @@ class LanDiscoveryManager(
 
     private fun notifyPeersUpdated() {
         val rawList = peersByIp.values.toList()
-        // Disambiguate if two different IPs have the exact same model/alias name
         val nameCounts = rawList.groupingBy { it.alias.lowercase() }.eachCount()
         val disambiguated = rawList.map { peer ->
             if ((nameCounts[peer.alias.lowercase()] ?: 0) > 1 && !peer.ipAddress.isNullOrBlank()) {

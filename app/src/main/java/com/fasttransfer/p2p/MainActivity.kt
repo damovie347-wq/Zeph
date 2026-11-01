@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        wifiDirectManager.discoverPeers()
+        wifiDirectManager.syncStateAndDiscover()
         lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
     }
 
@@ -185,6 +185,14 @@ class MainActivity : AppCompatActivity() {
 
         requestNecessaryPermissionsIfNeeded()
         handleIncomingShareIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::wifiDirectManager.isInitialized && ::lanDiscoveryManager.isInitialized) {
+            wifiDirectManager.syncStateAndDiscover()
+            lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -417,7 +425,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvNavSettings.setTextColor(if (index == 2) activeLabelColor else muted)
 
         if (::wifiDirectManager.isInitialized && ::lanDiscoveryManager.isInitialized && previousTab != index) {
-            wifiDirectManager.discoverPeers()
+            wifiDirectManager.syncStateAndDiscover()
             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
         }
     }
@@ -548,7 +556,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "Zero-Copy + 4 Kanal Paralel Ofset Akışı (5 GHz / 6 GHz)"
+            "Zero-Copy 32 MB Çift Çekirdekli DMA Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -653,7 +661,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnRefreshPeers.setOnClickListener {
             it.animate().rotationBy(360f).setDuration(450L).start()
-            wifiDirectManager.discoverPeers()
+            wifiDirectManager.syncStateAndDiscover()
             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
         }
         binding.btnManualScanIp.setOnClickListener {
@@ -688,7 +696,6 @@ class MainActivity : AppCompatActivity() {
                 deviceAlias = newAlias
                 binding.tvDeviceAliasReceive.text = deviceAlias
                 savePreferences()
-                wifiDirectManager.registerLocalP2pService()
                 lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
                 Toast.makeText(this, "Cihaz adı güncellendi: $deviceAlias", Toast.LENGTH_SHORT).show()
             }
@@ -797,6 +804,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             },
+            onDirectDisconnected = {
+                if (::lanDiscoveryManager.isInitialized) {
+                    lanDiscoveryManager.removePeersByPrefix("192.168.49.")
+                }
+            },
             onStatusLog = { _ ->
             }
         )
@@ -819,10 +831,10 @@ class MainActivity : AppCompatActivity() {
             getLocalAlias = { deviceAlias },
             getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceModelName() },
             onPrepareP2pGroup = {
-                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(4200L)
+                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3600L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 5800L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3400L)
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
@@ -844,6 +856,7 @@ class MainActivity : AppCompatActivity() {
             },
             onTransferActiveStateChanged = { isActiveTransfer ->
                 runOnUiThread {
+                    wifiDirectManager.setTransferInProgress(isActiveTransfer)
                     if (binding.switchKeepServiceNotification.isChecked) {
                         setHardwareServiceRunning(isActiveTransfer)
                     } else {
@@ -994,7 +1007,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 1. If we have an IP address (either 192.168.49.x P2P or LAN IP which automatically upgrades to 5GHz/SCC P2P):
         if (!peer.ipAddress.isNullOrBlank()) {
             transferEngine.sendItemsToPeers(
                 items = selectedTransferItems.toList(),
@@ -1004,15 +1016,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 2. Offline Mode (Zero Router): Connect directly inside Zeph via 5 GHz Wi-Fi Direct!
         if (!peer.macAddress.isNullOrBlank()) {
             pendingPeerForDirectTransfer = peer
             binding.tvTransferTitle.text = "5 GHz / 6 GHz Doğrudan Köprü Kuruluyor..."
-            binding.tvTransferEta.text = if (!peer.p2pSsid.isNullOrBlank()) {
-                "Otomatik yüksek hızlı P2P tüneline bağlanılıyor..."
-            } else {
-                "Karşı cihazda çıkan Wi-Fi Direct davetini onaylayın..."
-            }
+            binding.tvTransferEta.text = "Karşı cihazda çıkan Wi-Fi Direct davetini onaylayın..."
             wifiDirectManager.connectWithCascadingBandFallback(
                 macAddress = peer.macAddress,
                 peerSsid = peer.p2pSsid,
@@ -1490,7 +1497,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4 Kanal Paralel NIO + pwrite64 Ofset + SCC P2P")
+            appendLine("• Zero-Copy Motoru: 32 MB Çift Çekirdekli DMA + Otomatik 5GHz P2P")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1525,14 +1532,14 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Donanım Bant Desteği: $hwBands")
             appendLine("• Aktif Ağ Durumu: $ips")
             appendLine()
-            append("İki cihaz aynı ev Wi-Fi ağındayken veya hiçbir ağa bağlı değilken bile hedef cihaza dokunduğunuzda uygulama otomatik olarak 5 GHz / 6 GHz doğrudan P2P köprüsü kurar ve 4 paralel kanal üzerinden maksimum donanım hızında aktarır.")
+            append("İki cihaz aynı ev Wi-Fi ağındayken veya hiçbir ağa bağlı değilken bile hedef cihaza dokunduğunuzda uygulama otomatik olarak 5 GHz / 6 GHz doğrudan P2P köprüsü kurar ve maksimum donanım hızında aktarır.")
         }
         AlertDialog.Builder(this)
             .setTitle("Sorun Giderme")
             .setMessage(msg)
             .setPositiveButton("P2P & Ağ Taramasını Sıfırla") { _: DialogInterface, _: Int ->
                 wifiDirectManager.cleanupStaleGroups {
-                    wifiDirectManager.discoverPeers()
+                    wifiDirectManager.syncStateAndDiscover()
                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
                 }
             }

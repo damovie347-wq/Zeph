@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
-import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -55,6 +54,8 @@ object CompatibilityHelper {
         val list = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            list.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            list.add(Manifest.permission.ACCESS_COARSE_LOCATION)
             list.add(Manifest.permission.POST_NOTIFICATIONS)
             list.add(Manifest.permission.READ_MEDIA_IMAGES)
             list.add(Manifest.permission.READ_MEDIA_VIDEO)
@@ -71,8 +72,12 @@ object CompatibilityHelper {
     }
 
     fun hasAllRequiredPermissions(context: Context): Boolean {
-        return getRequiredRuntimePermissions().all { perm ->
-            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -85,24 +90,15 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * Checks if legacy placeholder names ("Kind Carrot", "Karo", etc.) are stored so they can be
-     * migrated automatically to the real device model name.
-     */
     fun isPlaceholderDeviceName(name: String?): Boolean {
         if (name.isNullOrBlank()) return true
         return PLACEHOLDER_NAMES.contains(name.trim().lowercase())
     }
 
-    /**
-     * Resolves a human-readable, accurate device model/system name such as "Galaxy S10+",
-     * "Galaxy Tab S9", "Pixel 8", etc. Never returns "Kind Carrot" or generic placeholders.
-     */
     @SuppressLint("HardwareIds")
     fun resolveUniqueDeviceName(context: Context): String {
         val mappedModel = mapRawModelToFriendlyName(Build.MANUFACTURER, Build.MODEL)
 
-        // Check user-configured system device name first (e.g. "Galaxy S10+" or "Galaxy Tab S9" on One UI)
         val systemDeviceName = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
                 Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)?.trim()
@@ -132,10 +128,11 @@ object CompatibilityHelper {
     fun getShortDeviceTag(context: Context): String {
         return try {
             val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
-            if (androidId.length >= 2) {
-                androidId.takeLast(2).uppercase()
+            val clean = androidId.filter { it.isLetterOrDigit() }
+            if (clean.length >= 2) {
+                clean.takeLast(2).uppercase()
             } else {
-                ((Build.MODEL?.hashCode() ?: 10) and 0xFF).toString(16).uppercase()
+                "01"
             }
         } catch (_: Throwable) {
             "01"
@@ -149,25 +146,21 @@ object CompatibilityHelper {
 
         val u = model.uppercase()
         when {
-            // Galaxy S10 series
             u.startsWith("SM-G975") -> return "Galaxy S10+"
             u.startsWith("SM-G973") -> return "Galaxy S10"
             u.startsWith("SM-G970") -> return "Galaxy S10e"
             u.startsWith("SM-G977") -> return "Galaxy S10 5G"
             u.startsWith("SM-G770") -> return "Galaxy S10 Lite"
-            // Galaxy Tab S9 series
             u.startsWith("SM-X910") || u.startsWith("SM-X916") || u.startsWith("SM-X918") -> return "Galaxy Tab S9 Ultra"
             u.startsWith("SM-X810") || u.startsWith("SM-X816") || u.startsWith("SM-X818") -> return "Galaxy Tab S9+"
             u.startsWith("SM-X710") || u.startsWith("SM-X716") || u.startsWith("SM-X718") -> return "Galaxy Tab S9"
             u.startsWith("SM-X610") || u.startsWith("SM-X616") -> return "Galaxy Tab S9 FE+"
             u.startsWith("SM-X510") || u.startsWith("SM-X516") -> return "Galaxy Tab S9 FE"
-            // Galaxy Tab S8 / S7 series
             u.startsWith("SM-X900") || u.startsWith("SM-X906") -> return "Galaxy Tab S8 Ultra"
             u.startsWith("SM-X800") || u.startsWith("SM-X806") -> return "Galaxy Tab S8+"
             u.startsWith("SM-X700") || u.startsWith("SM-X706") -> return "Galaxy Tab S8"
             u.startsWith("SM-T970") || u.startsWith("SM-T976") -> return "Galaxy Tab S7+"
             u.startsWith("SM-T870") || u.startsWith("SM-T875") -> return "Galaxy Tab S7"
-            // Galaxy S20 / S21 / S22 / S23 / S24 series
             u.startsWith("SM-S928") -> return "Galaxy S24 Ultra"
             u.startsWith("SM-S926") -> return "Galaxy S24+"
             u.startsWith("SM-S921") -> return "Galaxy S24"
@@ -201,10 +194,7 @@ object CompatibilityHelper {
     }
 
     /**
-     * Detects whether Mobile Hotspot (SoftAP / Tethering) is currently active on this device.
-     * When Mobile Hotspot is active, touching WifiP2pManager triggers annoying Samsung One UI
-     * system popups ("Wi-Fi Direct kullanmak için Mobil Erişim Noktasını kapatın").
-     * By detecting Hotspot state here, we completely silence all P2P calls while Hotspot is on!
+     * Detects whether Mobile Hotspot (SoftAP) is active on this device.
      */
     fun isMobileHotspotActive(context: Context): Boolean {
         try {
@@ -230,10 +220,37 @@ object CompatibilityHelper {
                         }
                     }
                 }
-                for (addr in nif.inetAddresses) {
-                    val ip = addr.hostAddress ?: continue
-                    if (ip == "192.168.43.1" || ip.startsWith("192.168.43.") || ip.startsWith("192.168.194.")) {
-                        if (n != "wlan0") return true
+            }
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
+    /**
+     * Checks if the connection with remoteIp is ALREADY a direct P2P or Hotspot link
+     * (including Samsung One UI 6 10.x.x.x Hotspot subnets where the peer is the Wi-Fi gateway!).
+     */
+    fun isAlreadyDirectOrHotspotConnection(context: Context, remoteIp: String): Boolean {
+        if (remoteIp.startsWith("192.168.49.") || remoteIp.startsWith("192.168.43.")) return true
+        if (isMobileHotspotActive(context)) return true
+
+        // On Samsung One UI 5/6 (e.g. Tab S9), Hotspot uses a 10.x.x.x subnet where the Hotspot host
+        // is the DHCP gateway or where the Wi-Fi network has no Internet validation ("İnternet olmadan bağlı")
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
+                val activeNet = cm.activeNetwork
+                val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
+                val linkProps = if (activeNet != null) cm.getLinkProperties(activeNet) else null
+                if (linkProps != null) {
+                    val isGatewayPeer = linkProps.routes.any { route ->
+                        route.gateway?.hostAddress == remoteIp
+                    }
+                    if (isGatewayPeer) return true
+                }
+                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    if (remoteIp.startsWith("10.") && !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        return true
                     }
                 }
             }
@@ -251,9 +268,6 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * Finds our local IPv4 address on the P2P interface (192.168.49.x).
-     */
     fun getLocalP2pInterfaceIp(): String? {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
@@ -273,15 +287,10 @@ object CompatibilityHelper {
         return null
     }
 
-    /**
-     * Binds an unconnected Socket directly to the local P2P / matching subnet interface
-     * so Android's routing table NEVER sends 192.168.49.x traffic through the home router (wlan0)!
-     */
     fun bindSocketToOptimalInterface(context: Context, socket: Socket, targetHostIp: String) {
         val targetPrefix = targetHostIp.substringBeforeLast('.', "")
         if (targetPrefix.isEmpty()) return
 
-        // 1. Try binding via ConnectivityManager Network if Android tracks a matching Network object
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -301,7 +310,6 @@ object CompatibilityHelper {
             }
         }
 
-        // 2. Bind directly to the matching NetworkInterface Inet4Address (works for all p2p-wlan0-x interfaces!)
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return
             for (nif in interfaces) {

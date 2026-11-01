@@ -58,7 +58,7 @@ class LanDiscoveryManager(
 
     /**
      * Immediately removes stale 192.168.49.x peers when Wi-Fi Direct disconnects
-     * so dead entries never linger on screen for 12 seconds!
+     * so dead entries never linger on screen.
      */
     fun removePeersByPrefix(ipPrefix: String) {
         var changed = false
@@ -205,10 +205,45 @@ class LanDiscoveryManager(
         }
     }
 
+    /**
+     * Broadcasts discovery beacons out of BOTH the default socket AND every bound local interface
+     * (including p2p-wlan0-0 192.168.49.x and Hotspot swlan0/ap0) so P2P peers discover each other's
+     * IP in < 20ms even when offline or when a Wi-Fi router is simultaneously connected.
+     */
     fun broadcastDiscoveryBeacon(isPing: Boolean = true) {
         scope.launch {
             try {
                 val bytes = buildBeaconJson(isPing).toString().toByteArray(Charsets.UTF_8)
+                val localAddrs = CompatibilityHelper.getAllActiveWifiAndP2pAddresses()
+
+                // 1. Send interface-bound packets so 192.168.49.x traffic is guaranteed to exit p2p-wlan0-0
+                for (localAddr in localAddrs) {
+                    val localIp = localAddr.hostAddress ?: continue
+                    val subnetPrefix = localIp.substringBeforeLast('.', "")
+                    if (subnetPrefix.isEmpty()) continue
+                    try {
+                        DatagramSocket(InetSocketAddress(localAddr, 0)).use { boundSock ->
+                            boundSock.broadcast = true
+                            val dests = mutableSetOf("$subnetPrefix.255", "$subnetPrefix.1", "255.255.255.255")
+                            for (dst in dests) {
+                                if (dst == localIp) continue
+                                try {
+                                    val pkt = DatagramPacket(
+                                        bytes,
+                                        bytes.size,
+                                        InetAddress.getByName(dst),
+                                        discoveryUdpPort
+                                    )
+                                    boundSock.send(pkt)
+                                } catch (_: Throwable) {
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+
+                // 2. Also broadcast on default socket as fallback
                 DatagramSocket().use { sock ->
                     sock.broadcast = true
                     val targets = mutableSetOf(
@@ -241,6 +276,26 @@ class LanDiscoveryManager(
         scope.launch {
             try {
                 val bytes = buildBeaconJson(isPing = false).toString().toByteArray(Charsets.UTF_8)
+                val targetPrefix = targetIp.substringBeforeLast('.', "")
+                val matchingLocal = CompatibilityHelper.getAllActiveWifiAndP2pAddresses().firstOrNull {
+                    it.hostAddress?.startsWith("$targetPrefix.") == true
+                }
+                if (matchingLocal != null) {
+                    try {
+                        DatagramSocket(InetSocketAddress(matchingLocal, 0)).use { boundSock ->
+                            val packet = DatagramPacket(
+                                bytes,
+                                bytes.size,
+                                InetAddress.getByName(targetIp),
+                                discoveryUdpPort
+                            )
+                            boundSock.send(packet)
+                            return@launch
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+
                 DatagramSocket().use { sock ->
                     val packet = DatagramPacket(
                         bytes,
@@ -364,7 +419,6 @@ class LanDiscoveryManager(
         while (iterator.hasNext()) {
             val entry = iterator.next()
             if (entry.value.isFavorite) continue
-            // If 192.168.49.x interface is down, prune 192.168.49.x peers immediately!
             if (entry.key.startsWith("192.168.49.") && !p2pInterfaceActive) {
                 iterator.remove()
                 changed = true

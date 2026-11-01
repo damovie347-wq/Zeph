@@ -512,6 +512,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnPauseResumeTransfer.setOnClickListener {
             val paused = transferEngine.togglePauseResume()
             binding.btnPauseResumeTransfer.text = if (paused) "Devam Et" else "Duraklat"
+            if (!paused) {
+                binding.btnOpenPartialFile.visibility = View.GONE
+            }
         }
 
         binding.btnCancelTransferKeepPartial.setOnClickListener {
@@ -525,8 +528,12 @@ class MainActivity : AppCompatActivity() {
             binding.btnPauseResumeTransfer.visibility = View.GONE
             binding.tvCancelOrDoneLabel.text = "Kapat"
             binding.tvTransferTitle.text = "Kısmi Dosya Korundu"
-            if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
-                binding.btnOpenPartialFile.visibility = View.VISIBLE
+            lifecycleScope.launch {
+                delay(180L)
+                if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
+                    binding.btnOpenPartialFile.visibility = View.VISIBLE
+                    binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
+                }
             }
             Toast.makeText(
                 this,
@@ -556,7 +563,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "Zero-Copy 32 MB Çift Çekirdekli DMA Akışı (5 GHz / 6 GHz)"
+            "4-Kanallı Paralel DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -760,7 +767,7 @@ class MainActivity : AppCompatActivity() {
                                 lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                             }
                             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                            delay(200L)
+                            delay(180L)
                         }
                     }
 
@@ -785,7 +792,7 @@ class MainActivity : AppCompatActivity() {
                                     targetClientIp = fromLan ?: fromArp
                                     if (!targetClientIp.isNullOrBlank()) break
                                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                                    delay(220L)
+                                    delay(180L)
                                 }
                                 withContext(Dispatchers.Main) {
                                     if (!targetClientIp.isNullOrBlank()) {
@@ -831,10 +838,10 @@ class MainActivity : AppCompatActivity() {
             getLocalAlias = { deviceAlias },
             getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceModelName() },
             onPrepareP2pGroup = {
-                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3600L)
+                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3500L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3400L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3200L)
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
@@ -1088,6 +1095,7 @@ class MainActivity : AppCompatActivity() {
                 binding.tvTransferTitle.text = "Toplam ilerleme (Duraklatıldı)"
                 if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
+                    binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
                 }
             }
             TransferStatus.PARTIAL_PRESERVED -> {
@@ -1497,7 +1505,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 32 MB Çift Çekirdekli DMA + Otomatik 5GHz P2P")
+            appendLine("• Zero-Copy Motoru: 4-Kanallı Paralel DMA + Sıralı UFS Yazıcı")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

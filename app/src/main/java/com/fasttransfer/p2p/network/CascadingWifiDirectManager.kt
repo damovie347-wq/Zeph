@@ -83,7 +83,7 @@ class CascadingWifiDirectManager(
 
     /**
      * Stops off-channel P2P discovery scans while a file is actively transferring so the 5 GHz radio
-     * stays 100% locked on the data channel with zero scan dips!
+     * stays 100% locked on the data channel with zero scan dips.
      * Automatically resumes discovery as soon as the transfer ends.
      */
     fun setTransferInProgress(inProgress: Boolean) {
@@ -136,7 +136,6 @@ class CascadingWifiDirectManager(
                     }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                    // 1. Read EXTRA_P2P_DEVICE_LIST directly from Intent for 0ms latency!
                     val listFromIntent = CompatibilityHelper.getParcelableExtraCompat(
                         intent,
                         WifiP2pManager.EXTRA_P2P_DEVICE_LIST,
@@ -145,7 +144,6 @@ class CascadingWifiDirectManager(
                     if (listFromIntent != null) {
                         handlePeerList(listFromIntent)
                     }
-                    // 2. Also query requestPeers as backup
                     val ch = channel ?: return
                     p2pManager?.requestPeers(ch) { peerList: WifiP2pDeviceList? ->
                         if (peerList != null) {
@@ -251,11 +249,6 @@ class CascadingWifiDirectManager(
         syncStateAndDiscover()
     }
 
-    /**
-     * Called on startup, onResume, and on Refresh button tap:
-     * Checks if a P2P group is currently formed; if not, immediately prunes stale 192.168.49.x peers
-     * and starts pure Wi-Fi Direct peer discovery!
-     */
     fun syncStateAndDiscover() {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return
         val mgr = p2pManager ?: return
@@ -274,10 +267,6 @@ class CascadingWifiDirectManager(
         }
     }
 
-    /**
-     * Fast 4-second discovery loop that NEVER gets permanently stuck because negotiatingUntilMs
-     * automatically expires and checks real P2P interface state.
-     */
     private fun startDiscoveryHeartbeat() {
         discoveryHeartbeatJob?.cancel()
         discoveryHeartbeatJob = scope.launch {
@@ -328,7 +317,6 @@ class CascadingWifiDirectManager(
 
     /**
      * Pure, uninterrupted Wi-Fi Direct peer discovery (identical to Android Settings -> Wi-Fi Direct).
-     * Does NOT call discoverServices() afterwards so wpa_supplicant never aborts p2p_find!
      */
     fun discoverPeers() {
         if (shouldSkipP2pBecauseHotspotOrWifiOff() || isTransferCurrentlyRunning) return
@@ -357,11 +345,14 @@ class CascadingWifiDirectManager(
     }
 
     /**
-     * Creates an Autonomous 5 GHz Wi-Fi Direct Group on the Receiver ALWAYS using a short 16-byte
-     * ASCII SSID ("DIRECT-ZP-ZephXX" <= 32 bytes) so WifiP2pConfig.Builder.setNetworkName() on the
-     * Sender NEVER throws IllegalArgumentException("network name exceeds 32 bytes")!
+     * Creates an Autonomous 5 GHz Wi-Fi Direct Group:
+     * 1. First attempts Android 10+ WifiP2pConfig.Builder with a 16-byte ASCII SSID ("DIRECT-ZP-ZephXX")
+     *    and GROUP_OWNER_BAND_5GHZ (succeeds on Galaxy Tab S9 Android 14 at 5745 MHz).
+     * 2. If the vendor HAL rejects 3-argument createGroup(ch, config) (as on Galaxy S10+ Android 12
+     *    Exynos 9820 HAL v1.0), immediately falls back to 2-argument mgr.createGroup(ch, null)
+     *    (which succeeds on Galaxy S10+ with "DIRECT-xx-Galaxy S10+", 21 bytes <= 32 bytes).
      */
-    fun createAutonomousHighSpeedGroupBlocking(timeoutMs: Long = 3800L): P2pGroupCredentials? {
+    fun createAutonomousHighSpeedGroupBlocking(timeoutMs: Long = 3500L): P2pGroupCredentials? {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return null
         val mgr = p2pManager ?: return null
         val ch = channel ?: return null
@@ -374,7 +365,6 @@ class CascadingWifiDirectManager(
             return existing
         }
 
-        // Check if a valid P2P group (< 32 byte SSID) is already formed
         val initialCheckLatch = CountDownLatch(1)
         mgr.requestGroupInfo(ch) { group ->
             if (group != null && group.isGroupOwner && !group.networkName.isNullOrBlank() && !group.passphrase.isNullOrBlank()) {
@@ -400,15 +390,18 @@ class CascadingWifiDirectManager(
             initialCheckLatch.countDown()
         }
         try {
-            initialCheckLatch.await(250L, TimeUnit.MILLISECONDS)
+            initialCheckLatch.await(220L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
-        cachedGroupCredentials.get()?.let { return it }
+        cachedGroupCredentials.get()?.let {
+            if (CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1") {
+                return it
+            }
+        }
 
-        negotiatingUntilMs = System.currentTimeMillis() + timeoutMs + 2000L
+        negotiatingUntilMs = System.currentTimeMillis() + timeoutMs + 1500L
 
         val tag = CompatibilityHelper.getShortDeviceTag(context)
-        // Strictly 16 ASCII bytes (well below Android's 32-byte limit!)
         val shortAsciiSsid = "DIRECT-ZP-Zeph$tag"
         val shortAsciiPwd = "zeph88889999"
 
@@ -437,21 +430,33 @@ class CascadingWifiDirectManager(
                         override fun onSuccess() {
                         }
                         override fun onFailure(reason: Int) {
-                            // If explicit 5 GHz conflicted with STA SCC channel, retry with GROUP_OWNER_BAND_AUTO
-                            // while STILL keeping the short 16-byte ASCII SSID!
+                            // Fallback 1: Standard 2-argument createGroup(ch, listener) for legacy HALs (like Galaxy S10+)
                             try {
-                                val configAuto = WifiP2pConfig.Builder()
-                                    .setNetworkName(shortAsciiSsid)
-                                    .setPassphrase(shortAsciiPwd)
-                                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
-                                    .enablePersistentMode(false)
-                                    .build()
-                                mgr.createGroup(ch, configAuto, null)
+                                mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+                                    override fun onSuccess() {}
+                                    override fun onFailure(r2: Int) {
+                                        // Fallback 2: GROUP_OWNER_BAND_AUTO with short ASCII SSID
+                                        try {
+                                            val configAuto = WifiP2pConfig.Builder()
+                                                .setNetworkName(shortAsciiSsid)
+                                                .setPassphrase(shortAsciiPwd)
+                                                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                                                .enablePersistentMode(false)
+                                                .build()
+                                            mgr.createGroup(ch, configAuto, null)
+                                        } catch (_: Throwable) {
+                                        }
+                                    }
+                                })
                             } catch (_: Throwable) {
                             }
                         }
                     })
                 } catch (_: Throwable) {
+                    try {
+                        mgr.createGroup(ch, null)
+                    } catch (_: Throwable) {
+                    }
                 }
             } else {
                 try {
@@ -464,7 +469,10 @@ class CascadingWifiDirectManager(
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val found = cachedGroupCredentials.get()
-            if (found != null && CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1") {
+            if (found != null &&
+                found.ssid.toByteArray(Charsets.UTF_8).size <= 32 &&
+                CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1"
+            ) {
                 negotiatingUntilMs = 0L
                 return found
             }
@@ -486,44 +494,56 @@ class CascadingWifiDirectManager(
                         freqMhz = if (freq > 0) freq else 5180,
                         bandLabel = label
                     )
-                    cachedGroupCredentials.set(creds)
+                    if (creds.ssid.toByteArray(Charsets.UTF_8).size <= 32) {
+                        cachedGroupCredentials.set(creds)
+                    }
                 }
                 latch.countDown()
             }
             try {
-                latch.await(180L, TimeUnit.MILLISECONDS)
+                latch.await(160L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
             val readyCreds = cachedGroupCredentials.get()
-            if (readyCreds != null && CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1") {
+            if (readyCreds != null &&
+                readyCreds.ssid.toByteArray(Charsets.UTF_8).size <= 32 &&
+                CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1"
+            ) {
                 negotiatingUntilMs = 0L
                 return readyCreds
             }
             try {
-                Thread.sleep(110L)
+                Thread.sleep(100L)
             } catch (_: Throwable) {
                 break
             }
         }
         negotiatingUntilMs = 0L
-        return cachedGroupCredentials.get()
+        val finalCreds = cachedGroupCredentials.get()
+        return if (finalCreds != null &&
+            finalCreds.ssid.toByteArray(Charsets.UTF_8).size <= 32 &&
+            CompatibilityHelper.getLocalP2pInterfaceIp() == "192.168.49.1"
+        ) {
+            finalCreds
+        } else {
+            null
+        }
     }
 
     /**
-     * Silently joins the Receiver's Autonomous Group using its short ASCII SSID & Passphrase.
-     * If the join does not complete within timeoutMs (3400ms), immediately calls cancelConnect()
-     * so the Wi-Fi radio NEVER stays stuck scanning in the background during the transfer!
+     * Silently joins the peer's Autonomous 5 GHz Group using its short ASCII SSID & Passphrase.
+     * If the join does not complete within timeoutMs, immediately calls cancelConnect()
+     * so the Wi-Fi radio NEVER stays stuck scanning in the background during transfer.
      */
     fun joinAutonomousGroupSilentlyBlocking(
         creds: P2pGroupCredentials,
-        timeoutMs: Long = 3400L
+        timeoutMs: Long = 3200L
     ): Boolean {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         val mgr = p2pManager ?: return false
         val ch = channel ?: return false
 
-        // Validate SSID byte length <= 32 bytes required by Android's WifiP2pConfig.Builder
         if (creds.ssid.toByteArray(Charsets.UTF_8).size > 32 || !creds.ssid.startsWith("DIRECT-")) {
             return false
         }
@@ -593,14 +613,12 @@ class CascadingWifiDirectManager(
                 return true
             }
             try {
-                Thread.sleep(110L)
+                Thread.sleep(100L)
             } catch (_: Throwable) {
                 break
             }
         }
 
-        // CRITICAL: If P2P join timed out, cancel the pending P2P scan immediately so it NEVER
-        // throttles the Wi-Fi radio during the fallback transfer!
         negotiatingUntilMs = 0L
         try {
             mgr.cancelConnect(ch, null)
@@ -656,7 +674,7 @@ class CascadingWifiDirectManager(
                         freqMhz = if (peerFreqMhz > 0) peerFreqMhz else 5180,
                         bandLabel = if (peerFreqMhz >= 5000) "5 GHz Doğrudan Köprü ($peerFreqMhz MHz)" else "Doğrudan Köprü"
                     )
-                    val joined = joinAutonomousGroupSilentlyBlocking(creds, 3500L)
+                    val joined = joinAutonomousGroupSilentlyBlocking(creds, 3200L)
                     if (joined) {
                         mainHandler.post {
                             onConnectedOrFailed(true, creds.bandLabel)
@@ -685,10 +703,13 @@ class CascadingWifiDirectManager(
         val supports5G = wifiManager?.is5GHzBandSupported == true
         activeBandLabel = if (supports5G) "5 GHz Doğrudan Köprü" else "Doğrudan Köprü (P2P)"
 
+        // Use groupOwnerIntent = 0 on the Sender when initiating standard P2P connect so the
+        // Receiver becomes Group Owner ("192.168.49.1") and the Sender immediately knows the
+        // target IP ("192.168.49.1") the instant the link comes up!
         val config = WifiP2pConfig().apply {
             deviceAddress = macAddress
             wps.setup = WpsInfo.PBC
-            groupOwnerIntent = if (preferHighBand && supports5G) 14 else 7
+            groupOwnerIntent = 0
         }
 
         try {
@@ -736,7 +757,7 @@ class CascadingWifiDirectManager(
         connectionPollJob = scope.launch {
             for (i in 0 until 55) {
                 if (!isActive) break
-                delay(260L)
+                delay(240L)
                 val p2pIp = CompatibilityHelper.getLocalP2pInterfaceIp()
                 if (!p2pIp.isNullOrBlank()) {
                     mainHandler.post {

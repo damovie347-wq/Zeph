@@ -234,8 +234,6 @@ object CompatibilityHelper {
         if (remoteIp.startsWith("192.168.49.") || remoteIp.startsWith("192.168.43.")) return true
         if (isMobileHotspotActive(context)) return true
 
-        // On Samsung One UI 5/6 (e.g. Tab S9), Hotspot uses a 10.x.x.x subnet where the Hotspot host
-        // is the DHCP gateway or where the Wi-Fi network has no Internet validation ("İnternet olmadan bağlı")
         try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
@@ -287,9 +285,59 @@ object CompatibilityHelper {
         return null
     }
 
+    /**
+     * Returns all active Wi-Fi, P2P (p2p-wlan0-0 / p2p0), and Hotspot (swlan0 / ap0) IPv4 addresses
+     * so UDP discovery sockets can bind directly to each physical interface.
+     */
+    fun getAllActiveWifiAndP2pAddresses(): List<Inet4Address> {
+        val result = mutableListOf<Inet4Address>()
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return result
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback) continue
+                val n = nif.name.lowercase()
+                if (n.startsWith("rmnet") || n.startsWith("ccmni") || n.startsWith("pdp") ||
+                    n.startsWith("tun") || n.startsWith("tap") || n.startsWith("dummy") || n.startsWith("lo")
+                ) {
+                    continue
+                }
+                for (addr in nif.inetAddresses) {
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        result.add(addr)
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return result
+    }
+
     fun bindSocketToOptimalInterface(context: Context, socket: Socket, targetHostIp: String) {
         val targetPrefix = targetHostIp.substringBeforeLast('.', "")
         if (targetPrefix.isEmpty()) return
+
+        // For 192.168.49.x (Wi-Fi Direct P2P), ConnectivityManager.allNetworks does NOT list p2p-wlan0-0!
+        // Always bind directly to the local 192.168.49.x Inet4Address on the p2p NetworkInterface first!
+        if (targetPrefix == "192.168.49") {
+            try {
+                val interfaces = NetworkInterface.getNetworkInterfaces()
+                if (interfaces != null) {
+                    for (nif in interfaces) {
+                        if (!nif.isUp || nif.isLoopback) continue
+                        for (addr in nif.inetAddresses) {
+                            if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                                val localIp = addr.hostAddress ?: continue
+                                if (localIp.startsWith("192.168.49.") && !socket.isBound) {
+                                    socket.bind(InetSocketAddress(addr, 0))
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {

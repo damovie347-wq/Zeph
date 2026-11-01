@@ -43,10 +43,27 @@ class LanDiscoveryManager(
     private var isNsdRegistered = false
     private var isNsdDiscovering = false
 
+    @Volatile
+    private var isTransferCurrentlyRunning: Boolean = false
+
     private val SERVICE_TYPE = "_fasttransfer._tcp."
 
     fun getLocalDeviceModelName(): String {
         return CompatibilityHelper.mapRawModelToFriendlyName(Build.MANUFACTURER, Build.MODEL)
+    }
+
+    /**
+     * CRITICAL FOR ZERO-STALL 100+ MB/s TRANSFERS:
+     * While a file transfer is actively running, suspends periodic UDP broadcast beacons
+     * (255.255.255.255 / 192.168.x.255) so the Wi-Fi radio NEVER drops out of 802.11ac/ax
+     * A-MPDU aggregation to transmit 6 Mbps legacy broadcast frames or switch MCC channels!
+     */
+    fun setTransferInProgress(inProgress: Boolean) {
+        val wasRunning = isTransferCurrentlyRunning
+        isTransferCurrentlyRunning = inProgress
+        if (wasRunning && !inProgress) {
+            broadcastDiscoveryBeacon(isPing = true)
+        }
     }
 
     fun start() {
@@ -56,10 +73,6 @@ class LanDiscoveryManager(
         startNsdRegistrationAndDiscovery()
     }
 
-    /**
-     * Immediately removes stale 192.168.49.x peers when Wi-Fi Direct disconnects
-     * so dead entries never linger on screen.
-     */
     fun removePeersByPrefix(ipPrefix: String) {
         var changed = false
         val iterator = peersByIp.entries.iterator()
@@ -163,7 +176,7 @@ class LanDiscoveryManager(
                         peersByIp[senderIp] = peer
                         notifyPeersUpdated()
 
-                        if (json.optBoolean("ping", false)) {
+                        if (json.optBoolean("ping", false) && !isTransferCurrentlyRunning) {
                             sendUnicastAnnounce(senderIp)
                         }
                     }
@@ -183,9 +196,11 @@ class LanDiscoveryManager(
         udpBeaconJob?.cancel()
         udpBeaconJob = scope.launch {
             while (isActive) {
-                broadcastDiscoveryBeacon(isPing = true)
-                pruneStalePeers()
-                delay(1800L)
+                if (!isTransferCurrentlyRunning) {
+                    broadcastDiscoveryBeacon(isPing = true)
+                    pruneStalePeers()
+                }
+                delay(2000L)
             }
         }
     }
@@ -205,18 +220,13 @@ class LanDiscoveryManager(
         }
     }
 
-    /**
-     * Broadcasts discovery beacons out of BOTH the default socket AND every bound local interface
-     * (including p2p-wlan0-0 192.168.49.x and Hotspot swlan0/ap0) so P2P peers discover each other's
-     * IP in < 20ms even when offline or when a Wi-Fi router is simultaneously connected.
-     */
     fun broadcastDiscoveryBeacon(isPing: Boolean = true) {
+        if (isTransferCurrentlyRunning) return
         scope.launch {
             try {
                 val bytes = buildBeaconJson(isPing).toString().toByteArray(Charsets.UTF_8)
                 val localAddrs = CompatibilityHelper.getAllActiveWifiAndP2pAddresses()
 
-                // 1. Send interface-bound packets so 192.168.49.x traffic is guaranteed to exit p2p-wlan0-0
                 for (localAddr in localAddrs) {
                     val localIp = localAddr.hostAddress ?: continue
                     val subnetPrefix = localIp.substringBeforeLast('.', "")
@@ -243,7 +253,6 @@ class LanDiscoveryManager(
                     }
                 }
 
-                // 2. Also broadcast on default socket as fallback
                 DatagramSocket().use { sock ->
                     sock.broadcast = true
                     val targets = mutableSetOf(
@@ -412,6 +421,7 @@ class LanDiscoveryManager(
     }
 
     private fun pruneStalePeers() {
+        if (isTransferCurrentlyRunning) return
         val now = System.currentTimeMillis()
         var changed = false
         val p2pInterfaceActive = CompatibilityHelper.getLocalP2pInterfaceIp() != null

@@ -33,6 +33,7 @@ import java.io.BufferedReader
 import java.io.FileReader
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @SuppressLint("MissingPermission")
@@ -70,6 +71,7 @@ class CascadingWifiDirectManager(
     @Volatile
     private var activeBandLabel: String = "Doğrudan Köprü (6GHz / 5GHz)"
 
+    private val lastKnownP2pFreqMhz = AtomicInteger(0)
     private val cachedGroupCredentials = AtomicReference<P2pGroupCredentials?>(null)
     private val discoveredP2pPeers = mutableMapOf<String, PeerDevice>()
 
@@ -82,10 +84,54 @@ class CascadingWifiDirectManager(
     fun getActiveGroupCredentials(): P2pGroupCredentials? = cachedGroupCredentials.get()
 
     /**
-     * Stops off-channel P2P discovery scans while a file is actively transferring so the 5 GHz radio
-     * stays 100% locked on the data channel with zero scan dips.
-     * Automatically resumes discovery as soon as the transfer ends.
+     * Resolves the real hardware frequency (e.g. 5745 MHz, 5765 MHz, 5180 MHz) of the current P2P
+     * or Hotspot link so the UI always displays the exact frequency in MHz.
      */
+    fun resolveCurrentLinkBandLabel(fallbackLabel: String): String {
+        cachedGroupCredentials.get()?.let { creds ->
+            if (creds.freqMhz >= 2400) {
+                return formatBandLabelFromFreq(creds.freqMhz)
+            }
+        }
+        val p2pFreq = lastKnownP2pFreqMhz.get()
+        if (p2pFreq >= 2400) {
+            return formatBandLabelFromFreq(p2pFreq)
+        }
+        val mgr = p2pManager
+        val ch = channel
+        if (mgr != null && ch != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val latch = CountDownLatch(1)
+            mgr.requestGroupInfo(ch) { group ->
+                if (group != null && group.frequency >= 2400) {
+                    lastKnownP2pFreqMhz.set(group.frequency)
+                }
+                latch.countDown()
+            }
+            try {
+                latch.await(120L, TimeUnit.MILLISECONDS)
+            } catch (_: Throwable) {
+            }
+            val queried = lastKnownP2pFreqMhz.get()
+            if (queried >= 2400) {
+                return formatBandLabelFromFreq(queried)
+            }
+        }
+        val wifiFreq = CompatibilityHelper.getActiveWifiFrequencyMhz(context)
+        if (wifiFreq >= 2400) {
+            return formatBandLabelFromFreq(wifiFreq)
+        }
+        return fallbackLabel
+    }
+
+    private fun formatBandLabelFromFreq(freqMhz: Int): String {
+        return when {
+            freqMhz >= 5925 -> "6 GHz Doğrudan Köprü ($freqMhz MHz)"
+            freqMhz >= 5000 -> "5 GHz Doğrudan Köprü ($freqMhz MHz)"
+            freqMhz >= 2400 -> "2.4 GHz Doğrudan Köprü ($freqMhz MHz)"
+            else -> activeBandLabel
+        }
+    }
+
     fun setTransferInProgress(inProgress: Boolean) {
         isTransferCurrentlyRunning = inProgress
         val mgr = p2pManager ?: return
@@ -176,6 +222,7 @@ class CascadingWifiDirectManager(
                             }
                         } else {
                             negotiatingUntilMs = 0L
+                            lastKnownP2pFreqMhz.set(0)
                             cachedGroupCredentials.set(null)
                             onDirectDisconnected()
                             if (!isTransferCurrentlyRunning) {
@@ -197,12 +244,10 @@ class CascadingWifiDirectManager(
             } else {
                 0
             }
-            val bandDesc = when {
-                freqMhz >= 5925 -> "6 GHz Doğrudan Köprü ($freqMhz MHz)"
-                freqMhz >= 5000 -> "5 GHz Doğrudan Köprü ($freqMhz MHz)"
-                freqMhz >= 2400 -> "2.4 GHz Doğrudan Köprü ($freqMhz MHz)"
-                else -> activeBandLabel
+            if (freqMhz >= 2400) {
+                lastKnownP2pFreqMhz.set(freqMhz)
             }
+            val bandDesc = formatBandLabelFromFreq(freqMhz)
             activeBandLabel = bandDesc
 
             if (group != null && p2pInfo.isGroupOwner) {
@@ -258,6 +303,7 @@ class CascadingWifiDirectManager(
             if (info != null && info.groupFormed && info.groupOwnerAddress != null) {
                 handleGroupFormedInfo(ch, info)
             } else {
+                lastKnownP2pFreqMhz.set(0)
                 cachedGroupCredentials.set(null)
                 onDirectDisconnected()
                 if (!isTransferCurrentlyRunning) {
@@ -295,6 +341,7 @@ class CascadingWifiDirectManager(
             return
         }
         negotiatingUntilMs = 0L
+        lastKnownP2pFreqMhz.set(0)
         cachedGroupCredentials.set(null)
         onDirectDisconnected()
         try {
@@ -315,9 +362,6 @@ class CascadingWifiDirectManager(
         }
     }
 
-    /**
-     * Pure, uninterrupted Wi-Fi Direct peer discovery (identical to Android Settings -> Wi-Fi Direct).
-     */
     fun discoverPeers() {
         if (shouldSkipP2pBecauseHotspotOrWifiOff() || isTransferCurrentlyRunning) return
         val mgr = p2pManager ?: return
@@ -344,14 +388,6 @@ class CascadingWifiDirectManager(
         }
     }
 
-    /**
-     * Creates an Autonomous 5 GHz Wi-Fi Direct Group:
-     * 1. First attempts Android 10+ WifiP2pConfig.Builder with a 16-byte ASCII SSID ("DIRECT-ZP-ZephXX")
-     *    and GROUP_OWNER_BAND_5GHZ (succeeds on Galaxy Tab S9 Android 14 at 5745 MHz).
-     * 2. If the vendor HAL rejects 3-argument createGroup(ch, config) (as on Galaxy S10+ Android 12
-     *    Exynos 9820 HAL v1.0), immediately falls back to 2-argument mgr.createGroup(ch, null)
-     *    (which succeeds on Galaxy S10+ with "DIRECT-xx-Galaxy S10+", 21 bytes <= 32 bytes).
-     */
     fun createAutonomousHighSpeedGroupBlocking(timeoutMs: Long = 3500L): P2pGroupCredentials? {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return null
         val mgr = p2pManager ?: return null
@@ -371,11 +407,8 @@ class CascadingWifiDirectManager(
                 val ssidBytes = group.networkName.toByteArray(Charsets.UTF_8).size
                 if (ssidBytes <= 32) {
                     val freq = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) group.frequency else 5180
-                    val label = when {
-                        freq >= 5925 -> "6 GHz Doğrudan Köprü ($freq MHz)"
-                        freq >= 5000 -> "5 GHz Doğrudan Köprü ($freq MHz)"
-                        else -> "Doğrudan P2P Köprü ($freq MHz)"
-                    }
+                    if (freq >= 2400) lastKnownP2pFreqMhz.set(freq)
+                    val label = formatBandLabelFromFreq(if (freq > 0) freq else 5180)
                     cachedGroupCredentials.set(
                         P2pGroupCredentials(
                             ssid = group.networkName,
@@ -390,7 +423,7 @@ class CascadingWifiDirectManager(
             initialCheckLatch.countDown()
         }
         try {
-            initialCheckLatch.await(220L, TimeUnit.MILLISECONDS)
+            initialCheckLatch.await(200L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
         cachedGroupCredentials.get()?.let {
@@ -430,25 +463,27 @@ class CascadingWifiDirectManager(
                         override fun onSuccess() {
                         }
                         override fun onFailure(reason: Int) {
-                            // Fallback 1: Standard 2-argument createGroup(ch, listener) for legacy HALs (like Galaxy S10+)
                             try {
-                                mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+                                val configAuto = WifiP2pConfig.Builder()
+                                    .setNetworkName(shortAsciiSsid)
+                                    .setPassphrase(shortAsciiPwd)
+                                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                                    .enablePersistentMode(false)
+                                    .build()
+                                mgr.createGroup(ch, configAuto, object : WifiP2pManager.ActionListener {
                                     override fun onSuccess() {}
                                     override fun onFailure(r2: Int) {
-                                        // Fallback 2: GROUP_OWNER_BAND_AUTO with short ASCII SSID
                                         try {
-                                            val configAuto = WifiP2pConfig.Builder()
-                                                .setNetworkName(shortAsciiSsid)
-                                                .setPassphrase(shortAsciiPwd)
-                                                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
-                                                .enablePersistentMode(false)
-                                                .build()
-                                            mgr.createGroup(ch, configAuto, null)
+                                            mgr.createGroup(ch, null)
                                         } catch (_: Throwable) {
                                         }
                                     }
                                 })
                             } catch (_: Throwable) {
+                                try {
+                                    mgr.createGroup(ch, null)
+                                } catch (_: Throwable) {
+                                }
                             }
                         }
                     })
@@ -481,12 +516,8 @@ class CascadingWifiDirectManager(
             mgr.requestGroupInfo(ch) { group ->
                 if (group != null && !group.networkName.isNullOrBlank() && !group.passphrase.isNullOrBlank()) {
                     val freq = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) group.frequency else 5180
-                    val label = when {
-                        freq >= 5925 -> "6 GHz Doğrudan Köprü ($freq MHz)"
-                        freq >= 5000 -> "5 GHz Doğrudan Köprü ($freq MHz)"
-                        freq >= 2400 -> "Doğrudan P2P Köprü ($freq MHz)"
-                        else -> "5 GHz Doğrudan Köprü"
-                    }
+                    if (freq >= 2400) lastKnownP2pFreqMhz.set(freq)
+                    val label = formatBandLabelFromFreq(if (freq > 0) freq else 5180)
                     val creds = P2pGroupCredentials(
                         ssid = group.networkName,
                         passphrase = group.passphrase,
@@ -501,7 +532,7 @@ class CascadingWifiDirectManager(
                 latch.countDown()
             }
             try {
-                latch.await(160L, TimeUnit.MILLISECONDS)
+                latch.await(150L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
             val readyCreds = cachedGroupCredentials.get()
@@ -513,7 +544,7 @@ class CascadingWifiDirectManager(
                 return readyCreds
             }
             try {
-                Thread.sleep(100L)
+                Thread.sleep(90L)
             } catch (_: Throwable) {
                 break
             }
@@ -531,13 +562,12 @@ class CascadingWifiDirectManager(
     }
 
     /**
-     * Silently joins the peer's Autonomous 5 GHz Group using its short ASCII SSID & Passphrase.
-     * If the join does not complete within timeoutMs, immediately calls cancelConnect()
-     * so the Wi-Fi radio NEVER stays stuck scanning in the background during transfer.
+     * Silently joins the peer's Autonomous 5 GHz / 6 GHz Group using exact single-frequency scan
+     * (setGroupOperatingFrequency) first, falling back to band scan if needed.
      */
     fun joinAutonomousGroupSilentlyBlocking(
         creds: P2pGroupCredentials,
-        timeoutMs: Long = 3200L
+        timeoutMs: Long = 3400L
     ): Boolean {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
@@ -550,6 +580,7 @@ class CascadingWifiDirectManager(
 
         val currentP2pIp = CompatibilityHelper.getLocalP2pInterfaceIp()
         if (!currentP2pIp.isNullOrBlank() && currentP2pIp != "192.168.49.1") {
+            if (creds.freqMhz >= 2400) lastKnownP2pFreqMhz.set(creds.freqMhz)
             return true
         }
 
@@ -560,13 +591,21 @@ class CascadingWifiDirectManager(
                     override fun onSuccess() { rmLatch.countDown() }
                     override fun onFailure(reason: Int) { rmLatch.countDown() }
                 })
-                rmLatch.await(400L, TimeUnit.MILLISECONDS)
+                rmLatch.await(450L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
+            }
+            // Wait until the old 192.168.49.1 interface is completely torn down before calling connect()
+            for (w in 0 until 8) {
+                if (CompatibilityHelper.getLocalP2pInterfaceIp() == null) break
+                try { Thread.sleep(70L) } catch (_: Throwable) {}
             }
         }
 
         negotiatingUntilMs = System.currentTimeMillis() + timeoutMs + 1000L
         activeBandLabel = creds.bandLabel
+        if (creds.freqMhz >= 2400) {
+            lastKnownP2pFreqMhz.set(creds.freqMhz)
+        }
 
         try {
             mgr.stopPeerDiscovery(ch, null)
@@ -580,23 +619,49 @@ class CascadingWifiDirectManager(
                 } else {
                     WifiP2pConfig.GROUP_OWNER_BAND_AUTO
                 }
-                val joinConfig = WifiP2pConfig.Builder()
+
+                // Try exact frequency first (setGroupOperatingFrequency scans ONLY that 1 channel -> ~200ms join!)
+                val exactFreqConfig = if (creds.freqMhz >= 2412) {
+                    try {
+                        WifiP2pConfig.Builder()
+                            .setNetworkName(creds.ssid)
+                            .setPassphrase(creds.passphrase)
+                            .setGroupOperatingFrequency(creds.freqMhz)
+                            .build()
+                    } catch (_: Throwable) {
+                        null
+                    }
+                } else {
+                    null
+                }
+
+                val bandJoinConfig = WifiP2pConfig.Builder()
                     .setNetworkName(creds.ssid)
                     .setPassphrase(creds.passphrase)
                     .setGroupOperatingBand(band)
                     .build()
 
-                mgr.connect(ch, joinConfig, object : WifiP2pManager.ActionListener {
+                val primaryConfig = exactFreqConfig ?: bandJoinConfig
+
+                mgr.connect(ch, primaryConfig, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
                     }
                     override fun onFailure(reason: Int) {
                         try {
-                            val autoJoinConfig = WifiP2pConfig.Builder()
-                                .setNetworkName(creds.ssid)
-                                .setPassphrase(creds.passphrase)
-                                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
-                                .build()
-                            mgr.connect(ch, autoJoinConfig, null)
+                            mgr.connect(ch, bandJoinConfig, object : WifiP2pManager.ActionListener {
+                                override fun onSuccess() {}
+                                override fun onFailure(r2: Int) {
+                                    try {
+                                        val autoJoinConfig = WifiP2pConfig.Builder()
+                                            .setNetworkName(creds.ssid)
+                                            .setPassphrase(creds.passphrase)
+                                            .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                                            .build()
+                                        mgr.connect(ch, autoJoinConfig, null)
+                                    } catch (_: Throwable) {
+                                    }
+                                }
+                            })
                         } catch (_: Throwable) {
                         }
                     }
@@ -613,7 +678,7 @@ class CascadingWifiDirectManager(
                 return true
             }
             try {
-                Thread.sleep(100L)
+                Thread.sleep(85L)
             } catch (_: Throwable) {
                 break
             }
@@ -631,9 +696,6 @@ class CascadingWifiDirectManager(
         return false
     }
 
-    /**
-     * Offline / Direct Wi-Fi Direct Connection when the user taps a discovered peer in Zeph.
-     */
     fun connectWithCascadingBandFallback(
         macAddress: String,
         peerSsid: String? = null,
@@ -672,7 +734,7 @@ class CascadingWifiDirectManager(
                         passphrase = peerPassphrase,
                         ownerIp = "192.168.49.1",
                         freqMhz = if (peerFreqMhz > 0) peerFreqMhz else 5180,
-                        bandLabel = if (peerFreqMhz >= 5000) "5 GHz Doğrudan Köprü ($peerFreqMhz MHz)" else "Doğrudan Köprü"
+                        bandLabel = formatBandLabelFromFreq(if (peerFreqMhz > 0) peerFreqMhz else 5180)
                     )
                     val joined = joinAutonomousGroupSilentlyBlocking(creds, 3200L)
                     if (joined) {
@@ -703,9 +765,6 @@ class CascadingWifiDirectManager(
         val supports5G = wifiManager?.is5GHzBandSupported == true
         activeBandLabel = if (supports5G) "5 GHz Doğrudan Köprü" else "Doğrudan Köprü (P2P)"
 
-        // Use groupOwnerIntent = 0 on the Sender when initiating standard P2P connect so the
-        // Receiver becomes Group Owner ("192.168.49.1") and the Sender immediately knows the
-        // target IP ("192.168.49.1") the instant the link comes up!
         val config = WifiP2pConfig().apply {
             deviceAddress = macAddress
             wps.setup = WpsInfo.PBC
@@ -757,7 +816,7 @@ class CascadingWifiDirectManager(
         connectionPollJob = scope.launch {
             for (i in 0 until 55) {
                 if (!isActive) break
-                delay(240L)
+                delay(220L)
                 val p2pIp = CompatibilityHelper.getLocalP2pInterfaceIp()
                 if (!p2pIp.isNullOrBlank()) {
                     mainHandler.post {

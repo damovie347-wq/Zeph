@@ -90,6 +90,47 @@ object CompatibilityHelper {
         }
     }
 
+    /**
+     * Computes a deterministic hardware & HAL capability score so that when two devices negotiate
+     * an automatic 5 GHz / 6 GHz Direct Bridge, the device with the newer Wi-Fi HAL / 80-160MHz
+     * Group Owner support (e.g., Galaxy Tab S9 or Redmi Note 13 Pro+ 5G on Android 14 vs Galaxy S10+
+     * on Android 12) is elected to create the Autonomous Group Owner first!
+     */
+    fun getDeviceGoCapabilityScore(context: Context): Int {
+        var score = Build.VERSION.SDK_INT
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm.is6GHzBandSupported) {
+                    score += 300
+                }
+                if (wm.is5GHzBandSupported) {
+                    score += 200
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            score += 100
+        }
+        return score
+    }
+
+    /**
+     * Reads the active Wi-Fi connection frequency in MHz (e.g. 5745, 5765, 5180) so even when
+     * connected via Hotspot or an existing P2P link, the exact MHz frequency is known.
+     */
+    @Suppress("DEPRECATION")
+    fun getActiveWifiFrequencyMhz(context: Context): Int {
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val freq = wm?.connectionInfo?.frequency ?: 0
+            if (freq > 0) return freq
+        } catch (_: Throwable) {
+        }
+        return 0
+    }
+
     fun isPlaceholderDeviceName(name: String?): Boolean {
         if (name.isNullOrBlank()) return true
         return PLACEHOLDER_NAMES.contains(name.trim().lowercase())
@@ -146,6 +187,8 @@ object CompatibilityHelper {
 
         val u = model.uppercase()
         when {
+            u.startsWith("23090RA98") -> return "Redmi Note 13 Pro+ 5G"
+            u.startsWith("2312DRA50") -> return "Redmi Note 13 Pro 5G"
             u.startsWith("SM-G975") -> return "Galaxy S10+"
             u.startsWith("SM-G973") -> return "Galaxy S10"
             u.startsWith("SM-G970") -> return "Galaxy S10e"
@@ -193,9 +236,6 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * Detects whether Mobile Hotspot (SoftAP) is active on this device.
-     */
     fun isMobileHotspotActive(context: Context): Boolean {
         try {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
@@ -226,10 +266,6 @@ object CompatibilityHelper {
         return false
     }
 
-    /**
-     * Checks if the connection with remoteIp is ALREADY a direct P2P or Hotspot link
-     * (including Samsung One UI 6 10.x.x.x Hotspot subnets where the peer is the Wi-Fi gateway!).
-     */
     fun isAlreadyDirectOrHotspotConnection(context: Context, remoteIp: String): Boolean {
         if (remoteIp.startsWith("192.168.49.") || remoteIp.startsWith("192.168.43.")) return true
         if (isMobileHotspotActive(context)) return true
@@ -285,10 +321,6 @@ object CompatibilityHelper {
         return null
     }
 
-    /**
-     * Returns all active Wi-Fi, P2P (p2p-wlan0-0 / p2p0), and Hotspot (swlan0 / ap0) IPv4 addresses
-     * so UDP discovery sockets can bind directly to each physical interface.
-     */
     fun getAllActiveWifiAndP2pAddresses(): List<Inet4Address> {
         val result = mutableListOf<Inet4Address>()
         try {
@@ -316,8 +348,6 @@ object CompatibilityHelper {
         val targetPrefix = targetHostIp.substringBeforeLast('.', "")
         if (targetPrefix.isEmpty()) return
 
-        // For 192.168.49.x (Wi-Fi Direct P2P), ConnectivityManager.allNetworks does NOT list p2p-wlan0-0!
-        // Always bind directly to the local 192.168.49.x Inet4Address on the p2p NetworkInterface first!
         if (targetPrefix == "192.168.49") {
             try {
                 val interfaces = NetworkInterface.getNetworkInterfaces()

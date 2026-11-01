@@ -6,7 +6,7 @@ import java.nio.channels.FileChannel
 
 object Mp4FastStartHelper {
 
-    data class Mp4TailMoovMetadata(
+    data class Mp4ContainerMetadata(
         val mdatOffset: Long,
         val mdatHeaderSize: Int,
         val originalMdatHeader: ByteArray,
@@ -23,13 +23,15 @@ object Mp4FastStartHelper {
 
     /**
      * Scans top-level ISO/IEC 14496-12 boxes in < 1ms.
-     * If the MP4 file has its 'moov' index box placed AFTER 'mdat' (at the end of the file,
-     * as produced by video mergers/recorders without faststart), extracts the 'mdat' header
-     * and the tail 'moov' box so that if the user pauses or cancels the transfer early,
-     * the partial file can still be played immediately by any video player.
+     * Supports BOTH:
+     * 1. Front-moov MP4s ([ftyp][moov][mdat]): extracts the 'mdat' header offset and size so
+     *    if the transfer is paused/canceled early, 'mdat' size is patched to match the exact
+     *    contiguous bytes on disk (preventing strict players from rejecting truncated 'mdat').
+     * 2. Tail-moov MP4s ([ftyp][mdat][moov], up to 64 MB moov): extracts both 'mdat' header
+     *    and the tail 'moov' atom from the end of the file so partial files have a complete index!
      */
-    fun extractTailMoovMetadata(fc: FileChannel, fileSize: Long): Mp4TailMoovMetadata? {
-        if (fileSize < 4L * 1024L * 1024L) return null
+    fun extractMp4Metadata(fc: FileChannel, fileSize: Long): Mp4ContainerMetadata? {
+        if (fileSize < 1024L * 1024L) return null
         try {
             val headerBuf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
             var pos = 0L
@@ -41,7 +43,7 @@ object Mp4FastStartHelper {
             var moovSize = 0L
             var boxCount = 0
 
-            while (pos + 8L <= fileSize && boxCount < 64) {
+            while (pos + 8L <= fileSize && boxCount < 128) {
                 boxCount++
                 headerBuf.clear()
                 val readBytes = fc.read(headerBuf, pos)
@@ -91,11 +93,13 @@ object Mp4FastStartHelper {
                 pos += boxSize
             }
 
-            // Only needed if 'moov' comes AFTER 'mdat' and is reasonably sized (<= 24 MB)
-            if (ftypFound &&
-                mdatOffset >= 0L &&
-                moovOffset > mdatOffset &&
-                moovSize in 32L..(24L * 1024L * 1024L) &&
+            if (!ftypFound || mdatOffset < 0L || moovOffset < 0L) {
+                return null
+            }
+
+            // Case 1: Tail-moov MP4 (moov is after mdat at the end of the file, up to 64 MB)
+            if (moovOffset > mdatOffset &&
+                moovSize in 32L..(64L * 1024L * 1024L) &&
                 (moovOffset + moovSize) <= fileSize
             ) {
                 val moovBytes = ByteArray(moovSize.toInt())
@@ -112,7 +116,7 @@ object Mp4FastStartHelper {
                     moovBytes[6] == 'o'.code.toByte() &&
                     moovBytes[7] == 'v'.code.toByte()
                 ) {
-                    return Mp4TailMoovMetadata(
+                    return Mp4ContainerMetadata(
                         mdatOffset = mdatOffset,
                         mdatHeaderSize = mdatHeaderSize,
                         originalMdatHeader = originalMdatHeader,
@@ -120,20 +124,30 @@ object Mp4FastStartHelper {
                     )
                 }
             }
+
+            // Case 2: Front-moov MP4 (moov is before mdat; only mdat header needs patching on partial file)
+            if (moovOffset < mdatOffset && mdatHeaderSize in 8..16) {
+                return Mp4ContainerMetadata(
+                    mdatOffset = mdatOffset,
+                    mdatHeaderSize = mdatHeaderSize,
+                    originalMdatHeader = originalMdatHeader,
+                    tailMoovBytes = ByteArray(0)
+                )
+            }
         } catch (_: Throwable) {
         }
         return null
     }
 
     /**
-     * Patches the 'mdat' box size to match [contiguousBytesWritten] and appends the tail 'moov'
-     * box right at [contiguousBytesWritten]. Because 'mdat' remains at its exact original byte
-     * offset from 0, all 'stco'/'co64' chunk offsets for the downloaded portion remain 100% valid!
+     * Patches the 'mdat' box size at [meta.mdatOffset] to match [contiguousBytesWritten] and,
+     * if [meta.tailMoovBytes] is non-empty, appends the tail 'moov' atom immediately at
+     * [contiguousBytesWritten]. Truncates any trailing bytes beyond the valid container boundary.
      */
     fun applyPartialMoovTail(
         fc: FileChannel,
         contiguousBytesWritten: Long,
-        meta: Mp4TailMoovMetadata
+        meta: Mp4ContainerMetadata
     ): Long {
         if (contiguousBytesWritten <= meta.mdatOffset + meta.mdatHeaderSize) {
             return contiguousBytesWritten
@@ -156,16 +170,21 @@ object Mp4FastStartHelper {
                 hdrBuf.put('t'.code.toByte())
             }
             hdrBuf.flip()
+            var hdrWritten = 0L
             while (hdrBuf.hasRemaining()) {
-                fc.write(hdrBuf, meta.mdatOffset + hdrBuf.position())
+                val w = fc.write(hdrBuf, meta.mdatOffset + hdrWritten)
+                if (w <= 0) break
+                hdrWritten += w
             }
 
-            val moovBuf = ByteBuffer.wrap(meta.tailMoovBytes)
             var writtenMoov = 0L
-            while (moovBuf.hasRemaining()) {
-                val w = fc.write(moovBuf, contiguousBytesWritten + writtenMoov)
-                if (w <= 0) break
-                writtenMoov += w
+            if (meta.tailMoovBytes.isNotEmpty()) {
+                val moovBuf = ByteBuffer.wrap(meta.tailMoovBytes)
+                while (moovBuf.hasRemaining()) {
+                    val w = fc.write(moovBuf, contiguousBytesWritten + writtenMoov)
+                    if (w <= 0) break
+                    writtenMoov += w
+                }
             }
 
             val finalPartialSize = contiguousBytesWritten + writtenMoov
@@ -184,12 +203,15 @@ object Mp4FastStartHelper {
     fun restoreOriginalMdatForResume(
         fc: FileChannel,
         contiguousBytesWritten: Long,
-        meta: Mp4TailMoovMetadata
+        meta: Mp4ContainerMetadata
     ) {
         try {
             val origBuf = ByteBuffer.wrap(meta.originalMdatHeader)
+            var hdrWritten = 0L
             while (origBuf.hasRemaining()) {
-                fc.write(origBuf, meta.mdatOffset + origBuf.position())
+                val w = fc.write(origBuf, meta.mdatOffset + hdrWritten)
+                if (w <= 0) break
+                hdrWritten += w
             }
             fc.truncate(contiguousBytesWritten)
             fc.position(contiguousBytesWritten)

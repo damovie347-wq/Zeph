@@ -563,7 +563,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "4-Kanallı Paralel DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
+            "6-Kanallı Lockless DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -762,12 +762,12 @@ class MainActivity : AppCompatActivity() {
             onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
                     lifecycleScope.launch(Dispatchers.IO) {
-                        repeat(6) {
+                        repeat(5) {
                             if (!isGroupOwner) {
                                 lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                             }
                             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                            delay(180L)
+                            delay(160L)
                         }
                     }
 
@@ -792,7 +792,7 @@ class MainActivity : AppCompatActivity() {
                                     targetClientIp = fromLan ?: fromArp
                                     if (!targetClientIp.isNullOrBlank()) break
                                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                                    delay(180L)
+                                    delay(160L)
                                 }
                                 withContext(Dispatchers.Main) {
                                     if (!targetClientIp.isNullOrBlank()) {
@@ -841,10 +841,13 @@ class MainActivity : AppCompatActivity() {
                 wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3500L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3200L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3400L)
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
+            },
+            resolveActiveBandLabel = { fallback ->
+                wifiDirectManager.resolveCurrentLinkBandLabel(fallback)
             },
             onIncomingConsentRequest = { req ->
                 runOnUiThread {
@@ -864,6 +867,7 @@ class MainActivity : AppCompatActivity() {
             onTransferActiveStateChanged = { isActiveTransfer ->
                 runOnUiThread {
                     wifiDirectManager.setTransferInProgress(isActiveTransfer)
+                    lanDiscoveryManager.setTransferInProgress(isActiveTransfer)
                     if (binding.switchKeepServiceNotification.isChecked) {
                         setHardwareServiceRunning(isActiveTransfer)
                     } else {
@@ -1505,7 +1509,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4-Kanallı Paralel DMA + Sıralı UFS Yazıcı")
+            appendLine("• Zero-Copy Motoru: 6-Kanallı Lockless DMA + Sıralı UFS Yazıcı")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

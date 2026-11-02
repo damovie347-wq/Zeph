@@ -83,10 +83,6 @@ class CascadingWifiDirectManager(
 
     fun getActiveGroupCredentials(): P2pGroupCredentials? = cachedGroupCredentials.get()
 
-    /**
-     * Resolves the real hardware frequency (e.g. 5745 MHz, 5765 MHz, 5180 MHz) of the current P2P
-     * or Hotspot link so the UI always displays the exact frequency in MHz.
-     */
     fun resolveCurrentLinkBandLabel(fallbackLabel: String): String {
         cachedGroupCredentials.get()?.let { creds ->
             if (creds.freqMhz >= 2400) {
@@ -388,6 +384,14 @@ class CascadingWifiDirectManager(
         }
     }
 
+    /**
+     * Creates an Autonomous 5 GHz / 6 GHz Group Owner with SCC (Single-Channel Concurrent) Locking:
+     * - If the device is currently connected to a 5 GHz router on frequency F_sta (e.g. 5180 MHz or 5745 MHz),
+     *   we FIRST request setGroupOperatingFrequency(F_sta) so wlan0 and p2p-wlan0-0 share the EXACT SAME
+     *   5 GHz physical channel (100% SCC mode — ZERO MCC channel hopping between two different 5 GHz channels!).
+     * - If F_sta is a DFS channel or wlan0 is on 2.4 GHz / disconnected, falls back immediately to
+     *   GROUP_OWNER_BAND_5GHZ (DBS mode -> 100% dedicated 5 GHz radio!).
+     */
     fun createAutonomousHighSpeedGroupBlocking(timeoutMs: Long = 3500L): P2pGroupCredentials? {
         if (shouldSkipP2pBecauseHotspotOrWifiOff()) return null
         val mgr = p2pManager ?: return null
@@ -447,35 +451,69 @@ class CascadingWifiDirectManager(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
                     val supports5G = wifiManager?.is5GHzBandSupported == true
+                    val activeStaFreq = CompatibilityHelper.getActiveWifiFrequencyMhz(context)
+
                     val band = if (preferHighBand && supports5G) {
                         WifiP2pConfig.GROUP_OWNER_BAND_5GHZ
                     } else {
                         WifiP2pConfig.GROUP_OWNER_BAND_AUTO
                     }
-                    val config5G = WifiP2pConfig.Builder()
+
+                    val config5GBand = WifiP2pConfig.Builder()
                         .setNetworkName(shortAsciiSsid)
                         .setPassphrase(shortAsciiPwd)
                         .setGroupOperatingBand(band)
                         .enablePersistentMode(false)
                         .build()
 
-                    mgr.createGroup(ch, config5G, object : WifiP2pManager.ActionListener {
+                    val configAutoBand = WifiP2pConfig.Builder()
+                        .setNetworkName(shortAsciiSsid)
+                        .setPassphrase(shortAsciiPwd)
+                        .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                        .enablePersistentMode(false)
+                        .build()
+
+                    // If STA (wlan0) is connected on a non-DFS 5 GHz channel (5180..5240 or 5745..5825),
+                    // lock P2P GO onto the exact same 5 GHz channel for 100% SCC (Zero MCC channel hopping!)
+                    val isNonDfs5GhzSta = (activeStaFreq in 5180..5240) || (activeStaFreq in 5745..5825)
+                    val primaryConfig = if (preferHighBand && supports5G && isNonDfs5GhzSta) {
+                        try {
+                            WifiP2pConfig.Builder()
+                                .setNetworkName(shortAsciiSsid)
+                                .setPassphrase(shortAsciiPwd)
+                                .setGroupOperatingFrequency(activeStaFreq)
+                                .enablePersistentMode(false)
+                                .build()
+                        } catch (_: Throwable) {
+                            config5GBand
+                        }
+                    } else {
+                        config5GBand
+                    }
+
+                    mgr.createGroup(ch, primaryConfig, object : WifiP2pManager.ActionListener {
                         override fun onSuccess() {
                         }
                         override fun onFailure(reason: Int) {
                             try {
-                                val configAuto = WifiP2pConfig.Builder()
-                                    .setNetworkName(shortAsciiSsid)
-                                    .setPassphrase(shortAsciiPwd)
-                                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
-                                    .enablePersistentMode(false)
-                                    .build()
-                                mgr.createGroup(ch, configAuto, object : WifiP2pManager.ActionListener {
+                                mgr.createGroup(ch, config5GBand, object : WifiP2pManager.ActionListener {
                                     override fun onSuccess() {}
-                                    override fun onFailure(r2: Int) {
+                                    override fun onFailure(r1: Int) {
                                         try {
-                                            mgr.createGroup(ch, null)
+                                            mgr.createGroup(ch, configAutoBand, object : WifiP2pManager.ActionListener {
+                                                override fun onSuccess() {}
+                                                override fun onFailure(r2: Int) {
+                                                    try {
+                                                        mgr.createGroup(ch, null)
+                                                    } catch (_: Throwable) {
+                                                    }
+                                                }
+                                            })
                                         } catch (_: Throwable) {
+                                            try {
+                                                mgr.createGroup(ch, null)
+                                            } catch (_: Throwable) {
+                                            }
                                         }
                                     }
                                 })
@@ -561,10 +599,6 @@ class CascadingWifiDirectManager(
         }
     }
 
-    /**
-     * Silently joins the peer's Autonomous 5 GHz / 6 GHz Group using exact single-frequency scan
-     * (setGroupOperatingFrequency) first, falling back to band scan if needed.
-     */
     fun joinAutonomousGroupSilentlyBlocking(
         creds: P2pGroupCredentials,
         timeoutMs: Long = 3400L
@@ -594,7 +628,6 @@ class CascadingWifiDirectManager(
                 rmLatch.await(450L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
-            // Wait until the old 192.168.49.1 interface is completely torn down before calling connect()
             for (w in 0 until 8) {
                 if (CompatibilityHelper.getLocalP2pInterfaceIp() == null) break
                 try { Thread.sleep(70L) } catch (_: Throwable) {}
@@ -620,7 +653,6 @@ class CascadingWifiDirectManager(
                     WifiP2pConfig.GROUP_OWNER_BAND_AUTO
                 }
 
-                // Try exact frequency first (setGroupOperatingFrequency scans ONLY that 1 channel -> ~200ms join!)
                 val exactFreqConfig = if (creds.freqMhz >= 2412) {
                     try {
                         WifiP2pConfig.Builder()

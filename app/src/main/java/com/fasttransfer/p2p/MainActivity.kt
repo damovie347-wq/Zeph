@@ -563,15 +563,20 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "4-Kanallı Kernel sendfile64 DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
+            "4-Kanallı Lockless Os.pread DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
-        binding.tvSessionItemTitle.text = "$initialFileName (${StorageHelper.formatFileSize(initialFileSize)})"
+        val formattedTotal = StorageHelper.formatFileSize(initialFileSize)
+        binding.tvSessionItemTitle.text = "$initialFileName ($formattedTotal)"
         binding.progressSessionItem.progress = 0
         binding.progressBarTransfer.progress = 0
         binding.tvTransferTitle.text = "Toplam ilerleme (--:--)"
-        binding.tvTransferElapsedTime.text = "Geçen Süre: 0.0 sn"
+        binding.tvAdvancedFilesCount.text = "Dosyalar: 0 / 1"
+        binding.tvTransferBytesAndPercent.text = "Boyut: 0 B / $formattedTotal"
+        binding.tvTransferSpeedMbps.text = "Hız: 0,0 MB/s"
+        binding.tvTransferElapsedTime.text = "Geçen Süre: 0,0 sn"
+        binding.tvTransferEta.text = "⚡ 5 GHz Doğrudan Köprü hazırlanıyor..."
         binding.btnPauseResumeTransfer.text = "Duraklat"
         binding.btnPauseResumeTransfer.visibility = View.VISIBLE
         binding.tvCancelOrDoneLabel.text = "İptal et"
@@ -761,13 +766,16 @@ class MainActivity : AppCompatActivity() {
             },
             onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        repeat(5) {
-                            if (!isGroupOwner) {
-                                lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
+                    if (!wifiDirectManager.isTransferRunning()) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            repeat(4) {
+                                if (wifiDirectManager.isTransferRunning()) return@launch
+                                if (!isGroupOwner) {
+                                    lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
+                                }
+                                lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                                delay(160L)
                             }
-                            lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                            delay(160L)
                         }
                     }
 
@@ -838,10 +846,13 @@ class MainActivity : AppCompatActivity() {
             getLocalAlias = { deviceAlias },
             getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceModelName() },
             onPrepareP2pGroup = {
-                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3400L)
+                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3000L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3200L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 2800L)
+            },
+            onCleanupP2pGroup = {
+                wifiDirectManager.cleanupStaleGroups()
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
@@ -865,9 +876,10 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             onTransferActiveStateChanged = { isActiveTransfer ->
+                // Stop P2P discovery & UDP beacons IMMEDIATELY on the calling thread!
+                wifiDirectManager.setTransferInProgress(isActiveTransfer)
+                lanDiscoveryManager.setTransferInProgress(isActiveTransfer)
                 runOnUiThread {
-                    wifiDirectManager.setTransferInProgress(isActiveTransfer)
-                    lanDiscoveryManager.setTransferInProgress(isActiveTransfer)
                     if (binding.switchKeepServiceNotification.isChecked) {
                         setHardwareServiceRunning(isActiveTransfer)
                     } else {
@@ -983,7 +995,6 @@ class MainActivity : AppCompatActivity() {
                     transport = ConnectionTransport.WIFI_DIRECT_AUTO
                 )
             } else if (combined.size == 1 && p2pPeers.size == 1 && combined[0].macAddress == null) {
-                // Single LAN peer + Single Wi-Fi Direct peer in range -> merge into one unified card!
                 val existing = combined[0]
                 combined[0] = existing.copy(
                     macAddress = p2p.macAddress,
@@ -1539,7 +1550,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4-FD Lockless Kernel sendfile64 DMA + Sıralı UFS Yazıcı")
+            appendLine("• Zero-Copy Motoru: 4-Kanallı Lockless Os.pread DMA + Sıralı UFS Yazıcı")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

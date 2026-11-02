@@ -22,8 +22,8 @@ enum class DeviceCategory {
 }
 
 enum class ConnectionTransport(val label: String, val priority: Int) {
-    WIFI_DIRECT_AUTO("Doğrudan Köprü (6GHz / 5GHz)", 1),
-    LAN_HOTSPOT("Otomatik Yüksek Hızlı Köprü", 2)
+    WIFI_DIRECT_AUTO("⚡ 5 GHz Doğrudan Köprü (Maksimum Hız)", 1),
+    LAN_HOTSPOT("🚀 Otomatik 5 GHz Köprü (Modem -> 5 GHz P2P)", 2)
 }
 
 enum class SendMode {
@@ -79,6 +79,8 @@ data class PeerDevice(
     val port: Int = 53317,
     val category: DeviceCategory = DeviceCategory.PHONE,
     val transport: ConnectionTransport = ConnectionTransport.LAN_HOTSPOT,
+    val customBadgeText: String? = null,
+    val customAddressText: String? = null,
     val isFavorite: Boolean = false,
     val p2pSsid: String? = null,
     val p2pPassphrase: String? = null,

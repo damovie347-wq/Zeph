@@ -1,3 +1,4 @@
+// Zeph v16.0.0-UltraDMA (Revision 2026.11.03-v16)
 package com.fasttransfer.p2p
 
 import android.app.Dialog
@@ -563,7 +564,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "4-Kanallı Lockless Os.pread DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
+            "6-Kanallı Lockless Os.pread/pwrite DMA + 2MB f2fs Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -1550,7 +1551,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4-Kanallı Lockless Os.pread DMA + Sıralı UFS Yazıcı")
+            appendLine("• Zero-Copy Motoru: 6-Kanallı Lockless Os.pread/pwrite DMA + 2MB f2fs Yazıcı (v16.0)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

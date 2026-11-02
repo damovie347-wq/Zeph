@@ -1,3 +1,4 @@
+// Zeph v16.0.0-UltraDMA — 6-Channel Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH Build
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,8 +12,8 @@ android {
         applicationId = "com.fasttransfer.p2p"
         minSdk = 21
         targetSdk = 34
-        versionCode = 5
-        versionName = "5.0.0-Master"
+        versionCode = 16
+        versionName = "16.0.0-UltraDMA"
 
         vectorDrawables {
             useSupportLibrary = true

@@ -1,3 +1,5 @@
+# Zeph v16.0.0-UltraDMA — 6-Kanallı Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH
+
 # FastTransfer P2P (Kernel Zero-Copy & Cascading 6GHz/5GHz/2.4GHz Android Projesi)
 
 Bu proje, ekteki videodaki **LocalSend** tabanlı koyu turkuaz/arduvaz (`#101818` / `#6CD4FF`) kullanıcı arayüzünü birebir uygulayan, **Android 5.0 (API 21)** ile **Android 15 (API 35)** arasındaki tüm cihazlarda çalışan ve donanımın desteklediği en yüksek ortak fiziksel kablosuz hızda (**Kernel Zero-Copy**) veri aktarımı yapan uçtan uca eksiksiz Android projesidir.

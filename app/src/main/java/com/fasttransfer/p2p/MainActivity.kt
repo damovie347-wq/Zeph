@@ -1,4 +1,4 @@
-// Zeph v16.0.0-UltraDMA (Revision 2026.11.03-v16)
+// Zeph v17.0.0-HyperStream (Revision 2026.11.03-v17)
 package com.fasttransfer.p2p
 
 import android.app.Dialog
@@ -564,7 +564,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "6-Kanallı Lockless Os.pread/pwrite DMA + 2MB f2fs Akışı (5 GHz / 6 GHz)"
+            "4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -995,9 +995,12 @@ class MainActivity : AppCompatActivity() {
                     p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else p2p.p2pFreqMhz,
                     transport = ConnectionTransport.WIFI_DIRECT_AUTO
                 )
-            } else if (combined.size == 1 && p2pPeers.size == 1 && combined[0].macAddress == null) {
-                val existing = combined[0]
-                combined[0] = existing.copy(
+            } else if (combined.count { !it.ipAddress.isNullOrBlank() && it.macAddress == null } == 1 &&
+                (p2pPeers.size == 1 || p2p.alias.contains("Wireless Client", ignoreCase = true) || p2p.alias.startsWith("Android_", ignoreCase = true))
+            ) {
+                val lanIdx = combined.indexOfFirst { !it.ipAddress.isNullOrBlank() && it.macAddress == null }
+                val existing = combined[lanIdx]
+                combined[lanIdx] = existing.copy(
                     macAddress = p2p.macAddress,
                     p2pSsid = existing.p2pSsid ?: p2p.p2pSsid,
                     p2pPassphrase = existing.p2pPassphrase ?: p2p.p2pPassphrase,
@@ -1551,7 +1554,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 6-Kanallı Lockless Os.pread/pwrite DMA + 2MB f2fs Yazıcı (v16.0)")
+            appendLine("• Zero-Copy Motoru: 4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Yazıcı (v17.0)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

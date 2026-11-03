@@ -1,4 +1,4 @@
-// Zeph v16.0.0-UltraDMA (Revision 2026.11.03-v16)
+// Zeph v17.0.0-HyperStream (Revision 2026.11.03-v17)
 package com.fasttransfer.p2p.util
 
 import android.content.ClipData

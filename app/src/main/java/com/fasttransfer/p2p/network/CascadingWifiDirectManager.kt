@@ -1,4 +1,4 @@
-// Zeph v16.0.0-UltraDMA (Revision 2026.11.03-v16)
+// Zeph v17.0.0-HyperStream (Revision 2026.11.03-v17)
 package com.fasttransfer.p2p.network
 
 import android.annotation.SuppressLint
@@ -506,13 +506,18 @@ class CascadingWifiDirectManager(
         val shortAsciiSsid = "DIRECT-ZP-Zeph$tag"
         val shortAsciiPwd = "zeph88889999"
 
+        // Clear any pending wpa_supplicant P2P invitation so createGroup() NEVER fails with BUSY!
+        try {
+            mgr.cancelConnect(ch, null)
+        } catch (_: Throwable) {
+        }
         val stopLatch = CountDownLatch(1)
         try {
             mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { stopLatch.countDown() }
                 override fun onFailure(reason: Int) { stopLatch.countDown() }
             })
-            stopLatch.await(80L, TimeUnit.MILLISECONDS)
+            stopLatch.await(55L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
 
@@ -682,13 +687,17 @@ class CascadingWifiDirectManager(
             lastKnownP2pFreqMhz.set(creds.freqMhz)
         }
 
+        try {
+            mgr.cancelConnect(ch, null)
+        } catch (_: Throwable) {
+        }
         val stopLatch = CountDownLatch(1)
         try {
             mgr.stopPeerDiscovery(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { stopLatch.countDown() }
                 override fun onFailure(reason: Int) { stopLatch.countDown() }
             })
-            stopLatch.await(75L, TimeUnit.MILLISECONDS)
+            stopLatch.await(50L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
 
@@ -736,14 +745,35 @@ class CascadingWifiDirectManager(
             }
         }
 
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val startJoinMs = System.currentTimeMillis()
+        val deadline = startJoinMs + timeoutMs
+        var retriedBandConfig = false
         while (System.currentTimeMillis() < deadline) {
             val p2pIp = CompatibilityHelper.getLocalP2pInterfaceIp()
             if (!p2pIp.isNullOrBlank() && p2pIp != "192.168.49.1") {
                 return true
             }
+            if (!retriedBandConfig && (System.currentTimeMillis() - startJoinMs) >= 950L) {
+                retriedBandConfig = true
+                mainHandler.post {
+                    try {
+                        val band = if (creds.freqMhz >= 5000 && wifiManager?.is5GHzBandSupported == true) {
+                            WifiP2pConfig.GROUP_OWNER_BAND_5GHZ
+                        } else {
+                            WifiP2pConfig.GROUP_OWNER_BAND_AUTO
+                        }
+                        val bandJoinConfig = WifiP2pConfig.Builder()
+                            .setNetworkName(creds.ssid)
+                            .setPassphrase(creds.passphrase)
+                            .setGroupOperatingBand(band)
+                            .build()
+                        mgr.connect(ch, bandJoinConfig, null)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
             try {
-                Thread.sleep(70L)
+                Thread.sleep(50L)
             } catch (_: Throwable) {
                 break
             }

@@ -1,4 +1,4 @@
-// Zeph v18.0.0-HyperStream (Revision 2026.11.03-v18)
+// Zeph v19.0.0-HyperStream (Revision 2026.11.03-v19)
 package com.fasttransfer.p2p.transfer
 
 import android.content.Context
@@ -133,7 +133,7 @@ class ZeroCopyTransferEngine(
     @Volatile
     private var sharedItemsForWebLink: List<TransferItem> = emptyList()
 
-    private val historyRecords = CopyOnWriteArrayList<TransferHistoryRecord>()
+    val historyRecords: MutableList<TransferHistoryRecord> = CopyOnWriteArrayList()
 
     private var activeWakeLock: PowerManager.WakeLock? = null
     private var activeWifiLock: WifiManager.WifiLock? = null
@@ -159,8 +159,18 @@ class ZeroCopyTransferEngine(
         historyRecords.clear()
     }
 
+    fun setItemsForWebLinkShare(items: List<TransferItem>) {
+        sharedItemsForWebLink = items
+    }
+
     fun setSharedItemsForLink(items: List<TransferItem>) {
         sharedItemsForWebLink = items
+    }
+
+    fun togglePauseResume(): Boolean {
+        val nextState = !isPaused.get()
+        isPaused.set(nextState)
+        return nextState
     }
 
     @Suppress("DEPRECATION")
@@ -259,6 +269,11 @@ class ZeroCopyTransferEngine(
         }
     }
 
+    fun stop() {
+        cancelAndPreservePartialFile()
+        stopServer()
+    }
+
     fun pauseCurrentTransfer() {
         isPaused.set(true)
     }
@@ -268,6 +283,10 @@ class ZeroCopyTransferEngine(
     }
 
     fun isCurrentlyPaused(): Boolean = isPaused.get()
+
+    fun cancelAndPreservePartialFile() {
+        cancelCurrentTransferKeepPartial()
+    }
 
     fun cancelCurrentTransferKeepPartial() {
         isCanceled.set(true)
@@ -739,7 +758,11 @@ class ZeroCopyTransferEngine(
                         totalBytes = totalBatchBytes,
                         firstFileName = firstFileName,
                         firstFileSize = firstFileSize,
-                        filePreviewList = previewLines
+                        filePreviewLines = previewLines.joinToString("
+"),
+                        onDecision = { approved ->
+                            decisionDeferred.complete(if (approved) DECISION_ACCEPTED else DECISION_REJECTED)
+                        }
                     )
                 )
 

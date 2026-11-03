@@ -1,4 +1,4 @@
-// Zeph v19.0.0-HyperStream (Revision 2026.11.03-v19)
+// Zeph v20.0.0-HyperStream (Revision 2026.11.04-v20)
 package com.fasttransfer.p2p
 
 import android.app.Dialog
@@ -1554,7 +1554,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Yazıcı (v19.0)")
+            appendLine("• Zero-Copy Motoru: 4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Yazıcı (v20.0)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

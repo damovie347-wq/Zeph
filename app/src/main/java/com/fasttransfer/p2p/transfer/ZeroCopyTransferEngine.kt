@@ -1,4 +1,4 @@
-// Zeph v19.0.0-HyperStream (Revision 2026.11.03-v19)
+// Zeph v20.0.0-HyperStream (Revision 2026.11.04-v20)
 package com.fasttransfer.p2p.transfer
 
 import android.content.Context
@@ -152,8 +152,6 @@ class ZeroCopyTransferEngine(
             }
         }
     }
-
-    fun getHistoryRecords(): List<TransferHistoryRecord> = historyRecords.toList()
 
     fun clearHistory() {
         historyRecords.clear()
@@ -758,8 +756,7 @@ class ZeroCopyTransferEngine(
                         totalBytes = totalBatchBytes,
                         firstFileName = firstFileName,
                         firstFileSize = firstFileSize,
-                        filePreviewLines = previewLines.joinToString("
-"),
+                        filePreviewLines = previewLines.joinToString(10.toChar().toString()),
                         onDecision = { approved ->
                             decisionDeferred.complete(if (approved) DECISION_ACCEPTED else DECISION_REJECTED)
                         }

@@ -8,4 +8,4 @@
         android:fillColor="#7AD8FF"
         android:pathData="M20,4H4C2.89,4 2,4.9 2,6v12c0,1.1 0.89,2 2,2h16c1.1,0 2,-0.9 2,-2V6C22,4.9 21.11,4 20,4zM20,18H4V8h16V18zM7.5,16.5l-1.41,-1.41L9.17,12L6.09,8.91L7.5,7.5L12,12L7.5,16.5zM13,15h5v2h-5V15z" />
 </vector>
-<!-- Zeph v20.0.0-HyperStream (Revision 2026.11.04-v20) -->
+<!-- Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21) -->

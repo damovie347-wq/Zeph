@@ -1,4 +1,4 @@
-// Zeph v20.0.0-HyperStream (Revision 2026.11.04-v20)
+// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p
 
 import android.app.Dialog
@@ -564,7 +564,7 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Akışı (5 GHz / 6 GHz)"
+            "6-Kanallı v12 Turbo Os.pread/pwrite DMA + FUSE Passthrough (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -847,10 +847,10 @@ class MainActivity : AppCompatActivity() {
             getLocalAlias = { deviceAlias },
             getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceModelName() },
             onPrepareP2pGroup = {
-                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3000L)
+                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3500L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 2800L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3500L)
             },
             onCleanupP2pGroup = {
                 wifiDirectManager.cleanupStaleGroups()
@@ -1554,7 +1554,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 4-Kanallı 4KB-Hizalı DMA + 4MB Ardışık UFS Yazıcı (v20.0)")
+            appendLine("• Zero-Copy Motoru: 6-Kanallı v12 Turbo Os.pread/pwrite DMA + FUSE Passthrough (v21.0)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 

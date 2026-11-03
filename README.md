@@ -1,4 +1,4 @@
-# Zeph v17.0.0-HyperStream — 6-Kanallı Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH
+# Zeph v18.0.0-HyperStream — 6-Kanallı Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH
 
 # FastTransfer P2P (Kernel Zero-Copy & Cascading 6GHz/5GHz/2.4GHz Android Projesi)
 

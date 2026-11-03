@@ -1,4 +1,4 @@
-// Zeph v17.0.0-HyperStream — 6-Channel Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH Build
+// Zeph v18.0.0-HyperStream — 6-Channel Lockless Os.pread/pwrite DMA & FUSE_PASSTHROUGH Build
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,8 +12,8 @@ android {
         applicationId = "com.fasttransfer.p2p"
         minSdk = 21
         targetSdk = 34
-        versionCode = 17
-        versionName = "17.0.0-HyperStream"
+        versionCode = 18
+        versionName = "18.0.0-HyperStream"
 
         vectorDrawables {
             useSupportLibrary = true

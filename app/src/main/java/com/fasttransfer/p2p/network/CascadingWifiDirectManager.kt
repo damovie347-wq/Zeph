@@ -683,13 +683,15 @@ class CascadingWifiDirectManager(
                 negotiatingUntilMs = 0L
                 return true
             }
+            var waitInterrupted = false
             synchronized(groupEventSignal) {
                 try {
                     groupEventSignal.wait(30L)
                 } catch (_: Throwable) {
-                    break
+                    waitInterrupted = true
                 }
             }
+            if (waitInterrupted) break
         }
 
         negotiatingUntilMs = 0L

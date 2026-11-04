@@ -3,4 +3,3 @@
     <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
 </adaptive-icon>
-<!-- Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21) -->

@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p.util
 
 import android.content.ClipData
@@ -11,11 +10,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.ParcelFileDescriptor
-import android.provider.DocumentsContract
-import android.provider.MediaStore
 import android.provider.OpenableColumns
-import android.system.Os
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import com.fasttransfer.p2p.model.ApkAppItem
@@ -29,9 +24,8 @@ object StorageHelper {
     /**
      * ZERO-CACHE SHARE SHEET & PICKER URI RESOLVER:
      * Never copies any URI to cacheDir or filesDir!
-     * Resolves the underlying direct File path (/storage/emulated/0/...) whenever accessible
-     * (via /proc/self/fd readlink, DocumentsContract, or MediaStore DATA) to bypass Android's
-     * MediaProvider FUSE daemon overhead completely!
+     * Reads only metadata (name & size) in <1ms and keeps the original content:// or file:// URI
+     * so ZeroCopyTransferEngine streams directly from the underlying FileDescriptor to the NIC.
      */
     fun extractTransferItemsFromIntent(context: Context, intent: Intent?): List<TransferItem> {
         if (intent == null) return emptyList()
@@ -80,82 +74,6 @@ object StorageHelper {
         return results
     }
 
-    private fun tryResolveDirectReadableFile(
-        context: Context,
-        uri: Uri,
-        openPfd: ParcelFileDescriptor? = null
-    ): File? {
-        if (uri.scheme == "file") {
-            val f = uri.path?.let { File(it) }
-            if (f != null && f.exists() && f.isFile && f.canRead()) return f
-        }
-
-        // 1. Try /proc/self/fd/<fd> symlink resolution
-        if (openPfd != null) {
-            try {
-                val rawLink = Os.readlink("/proc/self/fd/${openPfd.fd}")
-                if (!rawLink.isNullOrBlank()) {
-                    val candidates = mutableListOf(File(rawLink))
-                    val emulatedSuffix = rawLink.substringAfter("/emulated/0/", "")
-                    if (emulatedSuffix.isNotEmpty()) {
-                        candidates.add(File("/storage/emulated/0/$emulatedSuffix"))
-                    }
-                    for (c in candidates) {
-                        if (c.exists() && c.isFile && c.canRead()) {
-                            return c
-                        }
-                    }
-                }
-            } catch (_: Throwable) {
-            }
-        }
-
-        // 2. Try ExternalStorageProvider document ID (e.g. primary:Download/birlesmis_video.mp4)
-        try {
-            if (DocumentsContract.isDocumentUri(context, uri) &&
-                uri.authority == "com.android.externalstorage.documents"
-            ) {
-                val docId = DocumentsContract.getDocumentId(uri)
-                val parts = docId.split(":")
-                if (parts.size >= 2) {
-                    val type = parts[0]
-                    val relPath = parts[1]
-                    if (type.equals("primary", ignoreCase = true)) {
-                        @Suppress("DEPRECATION")
-                        val f = File(Environment.getExternalStorageDirectory(), relPath)
-                        if (f.exists() && f.isFile && f.canRead()) {
-                            return f
-                        }
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-        }
-
-        // 3. Try MediaStore.MediaColumns.DATA column
-        try {
-            @Suppress("DEPRECATION")
-            val dataCol = MediaStore.MediaColumns.DATA
-            context.contentResolver.query(uri, arrayOf(dataCol), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(dataCol)
-                    if (idx != -1 && !cursor.isNull(idx)) {
-                        val path = cursor.getString(idx)
-                        if (!path.isNullOrBlank()) {
-                            val f = File(path)
-                            if (f.exists() && f.isFile && f.canRead()) {
-                                return f
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-        }
-
-        return null
-    }
-
     fun buildTransferItemFromUri(context: Context, uri: Uri): TransferItem? {
         if (uri.scheme == "file") {
             val path = uri.path ?: return null
@@ -196,24 +114,15 @@ object StorageHelper {
         } catch (_: Throwable) {
         }
 
-        var resolvedDirectFile: File? = tryResolveDirectReadableFile(context, uri, null)
-
-        if (sizeBytes <= 0L || resolvedDirectFile == null) {
+        if (sizeBytes <= 0L) {
             try {
                 context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    if (sizeBytes <= 0L && pfd.statSize > 0L) {
+                    if (pfd.statSize > 0L) {
                         sizeBytes = pfd.statSize
-                    }
-                    if (resolvedDirectFile == null) {
-                        resolvedDirectFile = tryResolveDirectReadableFile(context, uri, pfd)
                     }
                 }
             } catch (_: Throwable) {
             }
-        }
-
-        if (resolvedDirectFile != null && sizeBytes <= 0L) {
-            sizeBytes = resolvedDirectFile!!.length()
         }
 
         val resolvedMime = context.contentResolver.getType(uri) ?: guessMimeType(displayName)
@@ -222,37 +131,33 @@ object StorageHelper {
             name = sanitizeFileName(displayName),
             sizeBytes = if (sizeBytes > 0L) sizeBytes else 0L,
             mimeType = resolvedMime,
-            uri = uri,
-            directFile = resolvedDirectFile
+            uri = uri
         )
     }
 
     fun buildTransferItemsFromTreeUri(context: Context, treeUri: Uri): List<TransferItem> {
         val results = mutableListOf<TransferItem>()
         val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return results
-        collectDocumentFilesRecursively(context, rootDoc, results)
+        collectDocumentFilesRecursively(rootDoc, results)
         return results
     }
 
     private fun collectDocumentFilesRecursively(
-        context: Context,
         dir: DocumentFile,
         outList: MutableList<TransferItem>
     ) {
         for (file in dir.listFiles()) {
             if (file.isDirectory) {
-                collectDocumentFilesRecursively(context, file, outList)
+                collectDocumentFilesRecursively(file, outList)
             } else if (file.isFile) {
                 val name = sanitizeFileName(file.name ?: "dosya_${System.currentTimeMillis()}")
-                val direct = tryResolveDirectReadableFile(context, file.uri, null)
                 outList.add(
                     TransferItem(
                         id = UUID.randomUUID().toString(),
                         name = name,
                         sizeBytes = file.length(),
                         mimeType = file.type ?: guessMimeType(name),
-                        uri = file.uri,
-                        directFile = direct
+                        uri = file.uri
                     )
                 )
             }
@@ -307,6 +212,7 @@ object StorageHelper {
             val apkFile = File(sourcePath)
             if (!apkFile.exists() || !apkFile.canRead()) continue
 
+            // Include user-installed apps and updated system apps (just like LocalSend APK picker)
             val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             if (isSystem && !isUpdatedSystem && pm.getLaunchIntentForPackage(pkg.packageName) == null) {
@@ -392,48 +298,37 @@ object StorageHelper {
 
     fun sanitizeFileName(raw: String): String {
         val replaced = raw.replace(Regex("[^a-zA-Z0-9._-]"), "_").trim()
-        return replaced.ifEmpty { "dosya_${System.currentTimeMillis()}" }
+        return if (replaced.isEmpty()) "dosya_${System.currentTimeMillis()}.bin" else replaced
     }
 
     fun guessMimeType(fileName: String): String {
-        val ext = fileName.substringAfterLast('.', "").lowercase()
-        if (ext.isNotEmpty()) {
-            val mapped = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-            if (!mapped.isNullOrEmpty()) return mapped
+        val dot = fileName.lastIndexOf('.')
+        if (dot != -1 && dot < fileName.length - 1) {
+            val ext = fileName.substring(dot + 1).lowercase()
+            val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            if (!mime.isNullOrEmpty()) return mime
+            return when (ext) {
+                "mkv" -> "video/x-matroska"
+                "mp4", "m4v" -> "video/mp4"
+                "mov" -> "video/quicktime"
+                "avi" -> "video/x-msvideo"
+                "webm" -> "video/webm"
+                "mp3" -> "audio/mpeg"
+                "flac" -> "audio/flac"
+                "apk" -> "application/vnd.android.package-archive"
+                "pdf" -> "application/pdf"
+                "zip" -> "application/zip"
+                else -> "application/octet-stream"
+            }
         }
-        return when (ext) {
-            "mp4", "m4v" -> "video/mp4"
-            "mkv" -> "video/x-matroska"
-            "mov" -> "video/quicktime"
-            "avi" -> "video/x-msvideo"
-            "webm" -> "video/webm"
-            "mp3" -> "audio/mpeg"
-            "wav" -> "audio/wav"
-            "flac" -> "audio/flac"
-            "jpg", "jpeg" -> "image/jpeg"
-            "png" -> "image/png"
-            "gif" -> "image/gif"
-            "webp" -> "image/webp"
-            "pdf" -> "application/pdf"
-            "apk" -> "application/vnd.android.package-archive"
-            "zip" -> "application/zip"
-            "txt", "log", "md" -> "text/plain"
-            else -> "application/octet-stream"
-        }
+        return "application/octet-stream"
     }
 
     fun formatFileSize(bytes: Long): String {
         if (bytes <= 0L) return "0 B"
-        val kb = 1024.0
-        val mb = kb * 1024.0
-        val gb = mb * 1024.0
-        val df1 = DecimalFormat("0.0")
-        val df2 = DecimalFormat("0.00")
-        return when {
-            bytes >= gb -> "${df2.format(bytes / gb)} GB"
-            bytes >= mb -> "${df1.format(bytes / mb)} MB"
-            bytes >= kb -> "${df1.format(bytes / kb)} KB"
-            else -> "$bytes B"
-        }
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, 4)
+        val value = bytes / Math.pow(1024.0, digitGroups.toDouble())
+        return DecimalFormat("#,##0.#").format(value) + " " + units[digitGroups]
     }
 }

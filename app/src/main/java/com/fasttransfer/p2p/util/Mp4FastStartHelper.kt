@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p.util
 
 import java.nio.ByteBuffer
@@ -23,10 +22,13 @@ object Mp4FastStartHelper {
     }
 
     /**
-     * Ultra-fast (< 0.2ms) top-level ISO/IEC 14496-12 box header check:
-     * NEVER seeks to the end of multi-GB files to read/transmit multi-megabyte tail 'moov'
-     * atoms over the control socket before transfer starts (eliminating the 3-5 second pre-transfer
-     * freeze AND preventing primaryHandle's kernel f_ra read-ahead state from jumping to EOF)!
+     * Scans top-level ISO/IEC 14496-12 boxes in < 1ms.
+     * Supports BOTH:
+     * 1. Front-moov MP4s ([ftyp][moov][mdat]): extracts the 'mdat' header offset and size so
+     *    if the transfer is paused/canceled early, 'mdat' size is patched to match the exact
+     *    contiguous bytes on disk (preventing strict players from rejecting truncated 'mdat').
+     * 2. Tail-moov MP4s ([ftyp][mdat][moov], up to 64 MB moov): extracts both 'mdat' header
+     *    and the tail 'moov' atom from the end of the file so partial files have a complete index!
      */
     fun extractMp4Metadata(fc: FileChannel, fileSize: Long): Mp4ContainerMetadata? {
         if (fileSize < 1024L * 1024L) return null
@@ -41,7 +43,7 @@ object Mp4FastStartHelper {
             var moovSize = 0L
             var boxCount = 0
 
-            while (pos + 8L <= fileSize && boxCount < 16) {
+            while (pos + 8L <= fileSize && boxCount < 128) {
                 boxCount++
                 headerBuf.clear()
                 val readBytes = fc.read(headerBuf, pos)
@@ -88,42 +90,43 @@ object Mp4FastStartHelper {
                     }
                 }
 
-                // Stop immediately once both ftyp/moov/mdat at the front of the file are identified
-                if (ftypFound && mdatOffset >= 0L && moovOffset >= 0L) {
-                    break
-                }
-
                 pos += boxSize
             }
 
-            if (!ftypFound || mdatOffset < 0L) {
+            if (!ftypFound || mdatOffset < 0L || moovOffset < 0L) {
                 return null
             }
 
-            // Front-moov MP4 or standard MP4 mdat header: 0 bytes of tailMoovBytes sent over control socket!
-            if (mdatHeaderSize in 8..16) {
-                // Only include tail moov if it is tiny (<= 128 KB) so startup is 100% instantaneous (< 0.2ms)
-                if (moovOffset > mdatOffset &&
-                    moovSize in 32L..(128L * 1024L) &&
-                    (moovOffset + moovSize) <= fileSize
-                ) {
-                    val moovBytes = ByteArray(moovSize.toInt())
-                    val moovBuf = ByteBuffer.wrap(moovBytes)
-                    var totalRead = 0
-                    while (totalRead < moovBytes.size) {
-                        val r = fc.read(moovBuf, moovOffset + totalRead)
-                        if (r <= 0) break
-                        totalRead += r
-                    }
-                    if (totalRead == moovBytes.size) {
-                        return Mp4ContainerMetadata(
-                            mdatOffset = mdatOffset,
-                            mdatHeaderSize = mdatHeaderSize,
-                            originalMdatHeader = originalMdatHeader,
-                            tailMoovBytes = moovBytes
-                        )
-                    }
+            // Case 1: Tail-moov MP4 (moov is after mdat at the end of the file, up to 64 MB)
+            if (moovOffset > mdatOffset &&
+                moovSize in 32L..(64L * 1024L * 1024L) &&
+                (moovOffset + moovSize) <= fileSize
+            ) {
+                val moovBytes = ByteArray(moovSize.toInt())
+                val moovBuf = ByteBuffer.wrap(moovBytes)
+                var totalRead = 0
+                while (totalRead < moovBytes.size) {
+                    val r = fc.read(moovBuf, moovOffset + totalRead)
+                    if (r <= 0) break
+                    totalRead += r
                 }
+                if (totalRead == moovBytes.size &&
+                    moovBytes[4] == 'm'.code.toByte() &&
+                    moovBytes[5] == 'o'.code.toByte() &&
+                    moovBytes[6] == 'o'.code.toByte() &&
+                    moovBytes[7] == 'v'.code.toByte()
+                ) {
+                    return Mp4ContainerMetadata(
+                        mdatOffset = mdatOffset,
+                        mdatHeaderSize = mdatHeaderSize,
+                        originalMdatHeader = originalMdatHeader,
+                        tailMoovBytes = moovBytes
+                    )
+                }
+            }
+
+            // Case 2: Front-moov MP4 (moov is before mdat; only mdat header needs patching on partial file)
+            if (moovOffset < mdatOffset && mdatHeaderSize in 8..16) {
                 return Mp4ContainerMetadata(
                     mdatOffset = mdatOffset,
                     mdatHeaderSize = mdatHeaderSize,

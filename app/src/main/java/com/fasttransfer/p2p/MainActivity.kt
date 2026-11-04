@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p
 
 import android.app.Dialog
@@ -564,20 +563,15 @@ class MainActivity : AppCompatActivity() {
         isTransferCurrentlyFinishedOrStopped = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "6-Kanallı v12 Turbo Os.pread/pwrite DMA + FUSE Passthrough (5 GHz / 6 GHz)"
+            "6-Kanallı Lockless DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
-        val formattedTotal = StorageHelper.formatFileSize(initialFileSize)
-        binding.tvSessionItemTitle.text = "$initialFileName ($formattedTotal)"
+        binding.tvSessionItemTitle.text = "$initialFileName (${StorageHelper.formatFileSize(initialFileSize)})"
         binding.progressSessionItem.progress = 0
         binding.progressBarTransfer.progress = 0
         binding.tvTransferTitle.text = "Toplam ilerleme (--:--)"
-        binding.tvAdvancedFilesCount.text = "Dosyalar: 0 / 1"
-        binding.tvTransferBytesAndPercent.text = "Boyut: 0 B / $formattedTotal"
-        binding.tvTransferSpeedMbps.text = "Hız: 0,0 MB/s"
-        binding.tvTransferElapsedTime.text = "Geçen Süre: 0,0 sn"
-        binding.tvTransferEta.text = "⚡ 5 GHz Doğrudan Köprü hazırlanıyor..."
+        binding.tvTransferElapsedTime.text = "Geçen Süre: 0.0 sn"
         binding.btnPauseResumeTransfer.text = "Duraklat"
         binding.btnPauseResumeTransfer.visibility = View.VISIBLE
         binding.tvCancelOrDoneLabel.text = "İptal et"
@@ -767,16 +761,13 @@ class MainActivity : AppCompatActivity() {
             },
             onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
-                    if (!wifiDirectManager.isTransferRunning()) {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            repeat(4) {
-                                if (wifiDirectManager.isTransferRunning()) return@launch
-                                if (!isGroupOwner) {
-                                    lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
-                                }
-                                lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                                delay(160L)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        repeat(5) {
+                            if (!isGroupOwner) {
+                                lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                             }
+                            lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
+                            delay(160L)
                         }
                     }
 
@@ -850,16 +841,13 @@ class MainActivity : AppCompatActivity() {
                 wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3500L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3500L)
-            },
-            onCleanupP2pGroup = {
-                wifiDirectManager.cleanupStaleGroups()
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3400L)
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
             },
-            resolveActiveBandLabel = { targetIp, fallback ->
-                wifiDirectManager.resolveCurrentLinkBandLabel(targetIp, fallback)
+            resolveActiveBandLabel = { fallback ->
+                wifiDirectManager.resolveCurrentLinkBandLabel(fallback)
             },
             onIncomingConsentRequest = { req ->
                 runOnUiThread {
@@ -877,10 +865,9 @@ class MainActivity : AppCompatActivity() {
                 }
             },
             onTransferActiveStateChanged = { isActiveTransfer ->
-                // Stop P2P discovery & UDP beacons IMMEDIATELY on the calling thread!
-                wifiDirectManager.setTransferInProgress(isActiveTransfer)
-                lanDiscoveryManager.setTransferInProgress(isActiveTransfer)
                 runOnUiThread {
+                    wifiDirectManager.setTransferInProgress(isActiveTransfer)
+                    lanDiscoveryManager.setTransferInProgress(isActiveTransfer)
                     if (binding.switchKeepServiceNotification.isChecked) {
                         setHardwareServiceRunning(isActiveTransfer)
                     } else {
@@ -951,23 +938,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun normalizeDeviceNameForMatch(raw: String): String {
-        return raw.lowercase()
-            .replace(Regex("\\(#\\d+\\)"), "")
-            .replace(Regex("[^a-z0-9]"), "")
-            .trim()
-    }
-
     private fun mergeAndRenderDiscoveredPeers() {
         val combined = mutableListOf<PeerDevice>()
 
         val sortedLan = lanPeers.sortedBy { if (it.ipAddress?.startsWith("192.168.49.") == true) 0 else 1 }
         for (lan in sortedLan) {
-            val normLan = normalizeDeviceNameForMatch(lan.alias)
-            val existingIdx = combined.indexOfFirst {
-                it.alias.equals(lan.alias, ignoreCase = true) ||
-                    (normLan.length >= 4 && normalizeDeviceNameForMatch(it.alias) == normLan)
-            }
+            val existingIdx = combined.indexOfFirst { it.alias.equals(lan.alias, ignoreCase = true) }
             if (existingIdx == -1) {
                 combined.add(lan)
             } else {
@@ -979,14 +955,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         for (p2p in p2pPeers) {
-            val normP2p = normalizeDeviceNameForMatch(p2p.alias)
-            val matchIdx = combined.indexOfFirst { existing ->
-                val normEx = normalizeDeviceNameForMatch(existing.alias)
-                existing.id == p2p.id ||
-                    existing.alias.equals(p2p.alias, ignoreCase = true) ||
-                    (normP2p.length >= 4 && (normEx == normP2p || normEx.contains(normP2p) || normP2p.contains(normEx)))
+            val matchIdx = combined.indexOfFirst {
+                it.id == p2p.id || it.alias.equals(p2p.alias, ignoreCase = true)
             }
-            if (matchIdx != -1) {
+            if (matchIdx == -1) {
+                combined.add(p2p)
+            } else {
                 val existing = combined[matchIdx]
                 combined[matchIdx] = existing.copy(
                     macAddress = existing.macAddress ?: p2p.macAddress,
@@ -994,25 +968,6 @@ class MainActivity : AppCompatActivity() {
                     p2pPassphrase = existing.p2pPassphrase ?: p2p.p2pPassphrase,
                     p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else p2p.p2pFreqMhz,
                     transport = ConnectionTransport.WIFI_DIRECT_AUTO
-                )
-            } else if (combined.count { !it.ipAddress.isNullOrBlank() && it.macAddress == null } == 1 &&
-                (p2pPeers.size == 1 || p2p.alias.contains("Wireless Client", ignoreCase = true) || p2p.alias.startsWith("Android_", ignoreCase = true))
-            ) {
-                val lanIdx = combined.indexOfFirst { !it.ipAddress.isNullOrBlank() && it.macAddress == null }
-                val existing = combined[lanIdx]
-                combined[lanIdx] = existing.copy(
-                    macAddress = p2p.macAddress,
-                    p2pSsid = existing.p2pSsid ?: p2p.p2pSsid,
-                    p2pPassphrase = existing.p2pPassphrase ?: p2p.p2pPassphrase,
-                    p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else p2p.p2pFreqMhz,
-                    transport = ConnectionTransport.WIFI_DIRECT_AUTO
-                )
-            } else {
-                combined.add(
-                    p2p.copy(
-                        customBadgeText = "⚡ 5 GHz Doğrudan Köprü (Wi-Fi Direct)",
-                        customAddressText = "Modemsiz Doğrudan Bağlantı • ${p2p.macAddress ?: "P2P"}"
-                    )
                 )
             }
         }
@@ -1067,14 +1022,14 @@ class MainActivity : AppCompatActivity() {
             transferEngine.sendItemsToPeers(
                 items = selectedTransferItems.toList(),
                 targetHostIps = listOf(peer.ipAddress to peer.port),
-                transportLabel = peer.customBadgeText ?: peer.transport.label
+                transportLabel = peer.transport.label
             )
             return
         }
 
         if (!peer.macAddress.isNullOrBlank()) {
             pendingPeerForDirectTransfer = peer
-            binding.tvTransferTitle.text = "⚡ 5 GHz Doğrudan Köprü Kuruluyor..."
+            binding.tvTransferTitle.text = "5 GHz / 6 GHz Doğrudan Köprü Kuruluyor..."
             binding.tvTransferEta.text = "Karşı cihazda çıkan Wi-Fi Direct davetini onaylayın..."
             wifiDirectManager.connectWithCascadingBandFallback(
                 macAddress = peer.macAddress,
@@ -1554,7 +1509,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 6-Kanallı v12 Turbo Os.pread/pwrite DMA + FUSE Passthrough (v21.0)")
+            appendLine("• Zero-Copy Motoru: 6-Kanallı Lockless DMA + Sıralı UFS Yazıcı")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1644,15 +1599,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         p2pWaitClientJob?.cancel()
         skeletonAnimationJob?.cancel()
-        if (::lanDiscoveryManager.isInitialized) {
-            lanDiscoveryManager.stop()
-        }
-        if (::wifiDirectManager.isInitialized) {
-            wifiDirectManager.stop()
-        }
-        if (::transferEngine.isInitialized) {
-            transferEngine.stop()
-        }
+        wifiDirectManager.stop()
+        lanDiscoveryManager.stop()
+        transferEngine.stop()
         if (!binding.switchKeepServiceNotification.isChecked) {
             setHardwareServiceRunning(false)
         }

@@ -4,4 +4,3 @@
     <solid android:color="@color/bg_skeleton" />
     <corners android:radius="6dp" />
 </shape>
-<!-- Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21) -->

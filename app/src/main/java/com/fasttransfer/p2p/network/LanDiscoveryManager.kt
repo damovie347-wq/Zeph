@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p.network
 
 import android.content.Context
@@ -53,6 +52,12 @@ class LanDiscoveryManager(
         return CompatibilityHelper.mapRawModelToFriendlyName(Build.MANUFACTURER, Build.MODEL)
     }
 
+    /**
+     * CRITICAL FOR ZERO-STALL 100+ MB/s TRANSFERS:
+     * While a file transfer is actively running, suspends periodic UDP broadcast beacons
+     * (255.255.255.255 / 192.168.x.255) so the Wi-Fi radio NEVER drops out of 802.11ac/ax
+     * A-MPDU aggregation to transmit 6 Mbps legacy broadcast frames or switch MCC channels!
+     */
     fun setTransferInProgress(inProgress: Boolean) {
         val wasRunning = isTransferCurrentlyRunning
         isTransferCurrentlyRunning = inProgress
@@ -91,31 +96,6 @@ class LanDiscoveryManager(
             ConnectionTransport.WIFI_DIRECT_AUTO
         } else {
             ConnectionTransport.LAN_HOTSPOT
-        }
-    }
-
-    private fun buildBadgeAndAddress(
-        ip: String,
-        model: String,
-        p2pFreq: Int,
-        p2pSsid: String?
-    ): Pair<String, String> {
-        return when {
-            ip.startsWith("192.168.49.") -> {
-                val freqStr = if (p2pFreq >= 5000) " ($p2pFreq MHz)" else " (5 GHz)"
-                "⚡ 5 GHz Doğrudan Köprü Aktif$freqStr" to "Doğrudan P2P • $ip (Modem Bypass)"
-            }
-            ip.startsWith("192.168.43.") || CompatibilityHelper.isAlreadyDirectOrHotspotConnection(context, ip) -> {
-                val wifiFreq = CompatibilityHelper.getActiveWifiFrequencyMhz(context)
-                val freqStr = if (wifiFreq >= 5000) " ($wifiFreq MHz)" else ""
-                "⚡ 5 GHz Doğrudan Hotspot Köprüsü$freqStr" to "Doğrudan Kanal • $ip"
-            }
-            !p2pSsid.isNullOrBlank() && p2pFreq >= 5000 -> {
-                "⚡ 5 GHz Doğrudan Köprü Hazır ($p2pFreq MHz)" to "$model • Otomatik 5 GHz Geçiş ($ip)"
-            }
-            else -> {
-                "🚀 Otomatik 5 GHz Köprü (Modem -> 5 GHz P2P)" to "$model • El Sıkışma: $ip"
-            }
         }
     }
 
@@ -178,7 +158,6 @@ class LanDiscoveryManager(
                         }
 
                         val transport = classifyTransportByIp(senderIp)
-                        val (badgeText, addrText) = buildBadgeAndAddress(senderIp, model, p2pFreq, p2pSsid)
 
                         val peer = PeerDevice(
                             id = "ip_$senderIp",
@@ -189,8 +168,6 @@ class LanDiscoveryManager(
                             port = port,
                             category = DeviceCategory.PHONE,
                             transport = transport,
-                            customBadgeText = badgeText,
-                            customAddressText = addrText,
                             p2pSsid = p2pSsid,
                             p2pPassphrase = p2pPwd,
                             p2pFreqMhz = p2pFreq,
@@ -235,7 +212,7 @@ class LanDiscoveryManager(
             put("model", getLocalDeviceModelName())
             put("port", transferPort)
             put("ping", isPing)
-            if (creds != null && creds.freqMhz >= 5000) {
+            if (creds != null) {
                 put("p2pSsid", creds.ssid)
                 put("p2pPwd", creds.passphrase)
                 put("p2pFreq", creds.freqMhz)
@@ -418,7 +395,6 @@ class LanDiscoveryManager(
                         } else {
                             "Cihaz ($hostIp)"
                         }
-                        val (badgeText, addrText) = buildBadgeAndAddress(hostIp, "Android", 0, null)
                         peersByIp[hostIp] = PeerDevice(
                             id = "ip_$hostIp",
                             alias = displayAlias,
@@ -428,8 +404,6 @@ class LanDiscoveryManager(
                             port = info.port.takeIf { it > 0 } ?: transferPort,
                             category = DeviceCategory.PHONE,
                             transport = classifyTransportByIp(hostIp),
-                            customBadgeText = badgeText,
-                            customAddressText = addrText,
                             lastSeenMs = System.currentTimeMillis()
                         )
                         notifyPeersUpdated()
@@ -468,43 +442,19 @@ class LanDiscoveryManager(
         }
     }
 
-    /**
-     * Deduplicates peers by alias/model so that if the same device is reachable on BOTH
-     * 192.168.49.x (Direct 5 GHz P2P Bridge) and 192.168.1.x (Modem Wi-Fi), it NEVER splits into
-     * two confusing (#1 / #45) cards — it merges into ONE card and always picks the fastest direct IP!
-     */
     private fun notifyPeersUpdated() {
         val rawList = peersByIp.values.toList()
-        val mergedByDevice = LinkedHashMap<String, PeerDevice>()
-
-        // Sort so 192.168.49.x (Direct P2P) comes FIRST before 192.168.1.x (Modem)
-        val prioritized = rawList.sortedBy { peer ->
-            val ip = peer.ipAddress ?: ""
-            when {
-                ip.startsWith("192.168.49.") -> 0
-                ip.startsWith("192.168.43.") -> 1
-                CompatibilityHelper.isAlreadyDirectOrHotspotConnection(context, ip) -> 2
-                else -> 3
-            }
-        }
-
-        for (peer in prioritized) {
-            val key = peer.alias.trim().lowercase()
-            val existing = mergedByDevice[key]
-            if (existing == null) {
-                mergedByDevice[key] = peer
+        val nameCounts = rawList.groupingBy { it.alias.lowercase() }.eachCount()
+        val disambiguated = rawList.map { peer ->
+            if ((nameCounts[peer.alias.lowercase()] ?: 0) > 1 && !peer.ipAddress.isNullOrBlank()) {
+                val suffix = peer.ipAddress.substringAfterLast('.')
+                peer.copy(alias = "${peer.alias} (#$suffix)")
             } else {
-                // Keep the direct IP (192.168.49.x), but inherit any P2P credentials advertised over LAN
-                mergedByDevice[key] = existing.copy(
-                    p2pSsid = existing.p2pSsid ?: peer.p2pSsid,
-                    p2pPassphrase = existing.p2pPassphrase ?: peer.p2pPassphrase,
-                    p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else peer.p2pFreqMhz
-                )
+                peer
             }
         }
-
         onLanPeersChanged(
-            mergedByDevice.values.sortedWith(
+            disambiguated.sortedWith(
                 compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias }
             )
         )

@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p.ui
 
 import android.view.LayoutInflater
@@ -35,8 +34,8 @@ class NearbyDeviceAdapter(
     override fun onBindViewHolder(holder: PeerViewHolder, position: Int) {
         val peer = items[position]
         holder.tvName.text = peer.alias
-        holder.tvBandTag.text = peer.customBadgeText ?: peer.transport.label
-        holder.tvAddress.text = peer.customAddressText ?: peer.ipAddress ?: peer.macAddress ?: "5 GHz Doğrudan Kanal"
+        holder.tvBandTag.text = peer.transport.label
+        holder.tvAddress.text = peer.ipAddress ?: peer.macAddress ?: "Doğrudan Kanal"
 
         val iconRes = when (peer.category) {
             DeviceCategory.PHONE -> R.drawable.ic_device_phone

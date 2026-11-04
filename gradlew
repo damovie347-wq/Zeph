@@ -74,4 +74,3 @@ if [ ! -f "" ] && which gradle >/dev/null 2>&1 ; then
 fi
 
 exec "" "-Dorg.gradle.appname=" -classpath "" org.gradle.wrapper.GradleWrapperMain ""
-# Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)

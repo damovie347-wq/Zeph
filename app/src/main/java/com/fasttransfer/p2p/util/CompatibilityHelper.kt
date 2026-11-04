@@ -1,4 +1,3 @@
-// Zeph v21.0.0-V12TurboCore (Revision 2026.11.04-v21)
 package com.fasttransfer.p2p.util
 
 import android.Manifest
@@ -61,14 +60,10 @@ object CompatibilityHelper {
             list.add(Manifest.permission.READ_MEDIA_IMAGES)
             list.add(Manifest.permission.READ_MEDIA_VIDEO)
             list.add(Manifest.permission.READ_MEDIA_AUDIO)
-            list.add(Manifest.permission.ACCESS_MEDIA_LOCATION)
         } else {
             list.add(Manifest.permission.ACCESS_FINE_LOCATION)
             list.add(Manifest.permission.ACCESS_COARSE_LOCATION)
             list.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                list.add(Manifest.permission.ACCESS_MEDIA_LOCATION)
-            }
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                 list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
@@ -95,6 +90,12 @@ object CompatibilityHelper {
         }
     }
 
+    /**
+     * Computes a deterministic hardware & HAL capability score so that when two devices negotiate
+     * an automatic 5 GHz / 6 GHz Direct Bridge, the device with the newer Wi-Fi HAL / 80-160MHz
+     * Group Owner support (e.g., Galaxy Tab S9 or Redmi Note 13 Pro+ 5G on Android 14 vs Galaxy S10+
+     * on Android 12) is elected to create the Autonomous Group Owner first!
+     */
     fun getDeviceGoCapabilityScore(context: Context): Int {
         var score = Build.VERSION.SDK_INT
         try {
@@ -115,6 +116,10 @@ object CompatibilityHelper {
         return score
     }
 
+    /**
+     * Reads the active Wi-Fi connection frequency in MHz (e.g. 5745, 5765, 5180) so even when
+     * connected via Hotspot or an existing P2P link, the exact MHz frequency is known.
+     */
     @Suppress("DEPRECATION")
     fun getActiveWifiFrequencyMhz(context: Context): Int {
         try {

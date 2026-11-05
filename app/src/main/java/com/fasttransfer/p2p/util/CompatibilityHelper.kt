@@ -91,6 +91,82 @@ object CompatibilityHelper {
     }
 
     /**
+     * Karşı taraf bu cihazın Wi-Fi İSTEMCİ (STA) arayüzünün alt ağındaysa (router LAN'ı veya karşı cihazın hotspot'u),
+     * negosiye edilen Wi-Fi bağlantısını özetler. Hız tavanını yazılım değil RADYO belirler; bu satır, ölçülen MB/s'nin
+     * tavana ne kadar yakın olduğunu doğrudan gösterir. Pratik TCP verimi ≈ PHY hızı × 0,65-0,70 (Cisco/Wi-Fi sahası kuralı).
+     * P2P (192.168.49.x) ve hotspot SAHİBİ tarafta WifiInfo bu bağlantıyı yansıtmadığından null döner.
+     */
+    @Suppress("DEPRECATION")
+    fun describeStaLinkToPeer(context: Context, peerIp: String): String? {
+        try {
+            val remote = parseIpv4Literal(peerIp) ?: return null
+            if (peerIp.startsWith("192.168.49.")) return null
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
+            var onStaSubnet = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                for (net in cm.allNetworks) {
+                    val caps = cm.getNetworkCapabilities(net) ?: continue
+                    if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                    val lp = cm.getLinkProperties(net) ?: continue
+                    val sameSubnet = lp.linkAddresses.any { la ->
+                        val local = ipv4ToInt(la.address)
+                        local != null && inSubnet(remote, local, la.prefixLength)
+                    }
+                    if (sameSubnet) {
+                        onStaSubnet = true
+                        break
+                    }
+                }
+            }
+            if (!onStaSubnet) return null
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return null
+            val info = wm.connectionInfo ?: return null
+            val tx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) info.txLinkSpeedMbps else info.linkSpeed
+            val rx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) info.rxLinkSpeedMbps else info.linkSpeed
+            val best = maxOf(tx, rx)
+            if (best <= 0) return null
+            val standard = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                when (info.wifiStandard) {
+                    4 -> "Wi-Fi 4 (11n)"
+                    5 -> "Wi-Fi 5 (11ac)"
+                    6 -> "Wi-Fi 6 (11ax)"
+                    7 -> "11ad"
+                    8 -> "Wi-Fi 7 (11be)"
+                    else -> "Wi-Fi"
+                }
+            } else {
+                "Wi-Fi"
+            }
+            val freq = info.frequency
+            val lowMbs = best * 0.65 / 8.0
+            val highMbs = best * 0.70 / 8.0
+            return String.format(
+                "Bağlantı: %s • %d MHz • Tx %d / Rx %d Mbps → pratik tavan ≈ %.0f–%.0f MB/s",
+                standard, freq, tx, rx, lowMbs, highMbs
+            )
+        } catch (_: Throwable) {
+            return null
+        }
+    }
+
+    /**
+     * WIFI_MODE_FULL_LOW_LATENCY kilidi YALNIZCA ekran açıkken VE uygulama ön plandayken aktiftir
+     * (AOSP WifiManager javadoc). Ekran kilitlenince / başka uygulamaya geçilince Wi-Fi güç tasarrufuna girip
+     * gecikme sıçramaları ve hız düşüşü yaratabilir. WIFI_MODE_FULL_HIGH_PERF ise ekran kapalıyken ve arka planda
+     * da aktiftir; javadoc iki kilidin birlikte alınmasını açıkça tarif eder. API 34'te "deprecated" olsa da çalışır.
+     */
+    @Suppress("DEPRECATION")
+    fun createHighPerfWifiLock(wifiManager: WifiManager, tag: String): WifiManager.WifiLock? {
+        return try {
+            wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, tag).apply {
+                setReferenceCounted(false)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
      * Computes a deterministic hardware & HAL capability score so that when two devices negotiate
      * an automatic 5 GHz / 6 GHz Direct Bridge, the device with the newer Wi-Fi HAL / 80-160MHz
      * Group Owner support (e.g., Galaxy Tab S9 or Redmi Note 13 Pro+ 5G on Android 14 vs Galaxy S10+
@@ -266,8 +342,130 @@ object CompatibilityHelper {
         return false
     }
 
+    // ------------------------------------------------------------------------------------------
+    // IPv4 yardımcıları: alt ağ eşleştirme. DNS çözümlemesi YAPMAZ (yalnızca sayısal IP ayrıştırır).
+    // ------------------------------------------------------------------------------------------
+    private fun ipv4ToInt(addr: java.net.InetAddress?): Int? {
+        val b = (addr as? Inet4Address)?.address ?: return null
+        if (b.size != 4) return null
+        return ((b[0].toInt() and 0xFF) shl 24) or ((b[1].toInt() and 0xFF) shl 16) or
+            ((b[2].toInt() and 0xFF) shl 8) or (b[3].toInt() and 0xFF)
+    }
+
+    private fun parseIpv4Literal(s: String?): Int? {
+        if (s.isNullOrBlank()) return null
+        val parts = s.trim().split('.')
+        if (parts.size != 4) return null
+        var out = 0
+        for (p in parts) {
+            val v = p.toIntOrNull() ?: return null
+            if (v < 0 || v > 255) return null
+            out = (out shl 8) or v
+        }
+        return out
+    }
+
+    private fun inSubnet(ip: Int, netAddr: Int, prefixLen: Int): Boolean {
+        if (prefixLen < 1 || prefixLen > 32) return false
+        val mask = if (prefixLen == 32) -1 else (-1 shl (32 - prefixLen))
+        return (ip and mask) == (netAddr and mask)
+    }
+
+    private fun isTunnelOrCellularInterfaceName(lowerName: String): Boolean {
+        return lowerName.startsWith("rmnet") || lowerName.startsWith("ccmni") || lowerName.startsWith("pdp") ||
+            lowerName.startsWith("tun") || lowerName.startsWith("tap") || lowerName.startsWith("dummy") ||
+            lowerName.startsWith("lo") || lowerName.startsWith("v4-") || lowerName.startsWith("clat")
+    }
+
+    /**
+     * Karşı taraf, cihazdaki HERHANGİ bir (hücresel/VPN olmayan) ağın varsayılan geçidi mi?
+     * Öyleyse bu cihaz, karşı tarafın hotspot'una / P2P grubuna istemci olarak bağlıdır => bağlantı zaten doğrudandır.
+     *
+     * v12 yalnızca cm.activeNetwork'e bakıyordu. Mobil veri açıkken Wi-Fi hotspot'u "internetsiz" sayılıp
+     * aktif ağ hücresele geçtiğinden bu kontrol sessizce başarısız oluyor ve gereksiz Wi-Fi Direct yükseltme
+     * müzakeresi (~15 sn) başlıyordu.
+     */
+    @Suppress("DEPRECATION")
+    private fun isRemoteGatewayOfAnyWifiNetwork(context: Context, remote: Int): Boolean {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            for (net in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(net)
+                if (caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
+                ) {
+                    continue
+                }
+                val lp = cm.getLinkProperties(net) ?: continue
+                for (route in lp.routes) {
+                    val gw = route.gateway ?: continue
+                    if (ipv4ToInt(gw) == remote) return true
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
+    /**
+     * Karşı taraf, bu cihazın yerel bir AP / tethering / P2P arayüzünün alt ağında mı?
+     * Öyleyse bu cihaz hotspot (veya P2P grup sahibi) tarafıdır => bağlantı zaten doğrudandır.
+     *
+     * Arayüz ADINA bağımlı değildir: tethering arayüzleri ConnectivityManager'da "ağ" olarak kayıtlı olmaz,
+     * normal Wi-Fi istemci arayüzü (router'a bağlı wlan0) ise kayıtlıdır. Bu ayrım, cihaz üreticisinin
+     * arayüz adlandırmasından (ap0, swlan0, wlan1, wlan0...) bağımsız çalışır.
+     */
+    @Suppress("DEPRECATION")
+    private fun isRemoteOnLocalTetherInterface(context: Context, remote: Int): Boolean {
+        try {
+            val registered = HashSet<String>()
+            var registryOk = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                if (cm != null) {
+                    for (net in cm.allNetworks) {
+                        val ifName = cm.getLinkProperties(net)?.interfaceName
+                        if (!ifName.isNullOrBlank()) registered.add(ifName)
+                    }
+                    registryOk = true
+                }
+            }
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return false
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback) continue
+                val name = nif.name ?: continue
+                val lower = name.lowercase()
+                if (isTunnelOrCellularInterfaceName(lower)) continue
+                for (ia in nif.interfaceAddresses) {
+                    val a = ia.address as? Inet4Address ?: continue
+                    if (a.isLoopbackAddress) continue
+                    val local = ipv4ToInt(a) ?: continue
+                    if (!inSubnet(remote, local, ia.networkPrefixLength.toInt())) continue
+                    val nameLooksLikeTether = lower.startsWith("p2p") || lower.startsWith("ap") ||
+                        lower.startsWith("swlan") || lower.startsWith("softap") || lower.startsWith("wlan1") ||
+                        lower.startsWith("rndis") || lower.startsWith("bt-pan") || lower.startsWith("bnep")
+                    if (nameLooksLikeTether) return true
+                    if (registryOk && !registered.contains(name)) return true
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
     fun isAlreadyDirectOrHotspotConnection(context: Context, remoteIp: String): Boolean {
-        if (remoteIp.startsWith("192.168.49.") || remoteIp.startsWith("192.168.43.")) return true
+        if (remoteIp.startsWith("192.168.49.")) return true
+        val remote = parseIpv4Literal(remoteIp)
+
+        // (A) Ben hotspot/P2P istemcisiyim: karşı taraf bir ağın geçidi.
+        if (remote != null && isRemoteGatewayOfAnyWifiNetwork(context, remote)) return true
+
+        // (B) Ben hotspot/P2P sahibiyim: karşı taraf yerel tethering arayüzümün alt ağında.
+        if (remote != null && isRemoteOnLocalTetherInterface(context, remote)) return true
+
+        // (C) Eski sezgiler (geri uyumluluk için korunur)
+        if (remoteIp.startsWith("192.168.43.")) return true
         if (isMobileHotspotActive(context)) return true
 
         try {
@@ -275,13 +473,6 @@ object CompatibilityHelper {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
                 val activeNet = cm.activeNetwork
                 val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
-                val linkProps = if (activeNet != null) cm.getLinkProperties(activeNet) else null
-                if (linkProps != null) {
-                    val isGatewayPeer = linkProps.routes.any { route ->
-                        route.gateway?.hostAddress == remoteIp
-                    }
-                    if (isGatewayPeer) return true
-                }
                 if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
                     if (remoteIp.startsWith("10.") && !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                         return true
@@ -344,11 +535,17 @@ object CompatibilityHelper {
         return result
     }
 
+    /**
+     * Soketi hedefe giden doğru arayüze/ağa bağlar. Wi-Fi internetsizse Android varsayılan ağı hücresele
+     * çevirir; bağlanmamış bir soket yerel IP'ye hücresel üzerinden gitmeye çalışıp zaman aşımına uğrar.
+     * v12 eşleştirmeyi "/24 string öneki" ile yapıyordu (/23, /16 ağlarda hedef farklı 3. oktette ise kaçırıyordu);
+     * burada gerçek önek uzunluğuna (LinkAddress.prefixLength / InterfaceAddress.networkPrefixLength) göre eşleşir.
+     */
     fun bindSocketToOptimalInterface(context: Context, socket: Socket, targetHostIp: String) {
-        val targetPrefix = targetHostIp.substringBeforeLast('.', "")
-        if (targetPrefix.isEmpty()) return
+        val target = parseIpv4Literal(targetHostIp) ?: return
 
-        if (targetPrefix == "192.168.49") {
+        // 1) Wi-Fi Direct grubu (192.168.49.x): yerel p2p adresine bağla (v12 davranışı korunur)
+        if (targetHostIp.startsWith("192.168.49.")) {
             try {
                 val interfaces = NetworkInterface.getNetworkInterfaces()
                 if (interfaces != null) {
@@ -369,17 +566,29 @@ object CompatibilityHelper {
             }
         }
 
+        // 2) ConnectivityManager ağına bağla (hotspot İSTEMCİSİ / router Wi-Fi'si; hücresel/VPN hariç)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                @Suppress("DEPRECATION")
                 val networks = cm?.allNetworks ?: emptyArray()
                 for (net in networks) {
-                    val linkProps = cm?.getLinkProperties(net) ?: continue
-                    val matchesSubnet = linkProps.linkAddresses.any { la ->
-                        val hostAddr = la.address?.hostAddress ?: ""
-                        hostAddr.startsWith("$targetPrefix.")
+                    val caps = cm?.getNetworkCapabilities(net)
+                    if (caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
+                    ) {
+                        continue
                     }
-                    if (matchesSubnet) {
+                    val linkProps = cm?.getLinkProperties(net) ?: continue
+                    val onSubnet = linkProps.linkAddresses.any { la ->
+                        val local = ipv4ToInt(la.address)
+                        local != null && inSubnet(target, local, la.prefixLength)
+                    }
+                    val isGateway = linkProps.routes.any { r ->
+                        val gw = r.gateway
+                        gw != null && ipv4ToInt(gw) == target
+                    }
+                    if (onSubnet || isGateway) {
                         net.bindSocket(socket)
                         return
                     }
@@ -388,17 +597,18 @@ object CompatibilityHelper {
             }
         }
 
+        // 3) Yerel arayüz adresine bağla (hotspot SAHİBİ: tethering arayüzü ConnectivityManager'da ağ değildir)
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return
             for (nif in interfaces) {
                 if (!nif.isUp || nif.isLoopback) continue
-                for (addr in nif.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        val localIp = addr.hostAddress ?: continue
-                        if (localIp.startsWith("$targetPrefix.") && !socket.isBound) {
-                            socket.bind(InetSocketAddress(addr, 0))
-                            return
-                        }
+                for (ia in nif.interfaceAddresses) {
+                    val a = ia.address as? Inet4Address ?: continue
+                    if (a.isLoopbackAddress) continue
+                    val local = ipv4ToInt(a) ?: continue
+                    if (inSubnet(target, local, ia.networkPrefixLength.toInt()) && !socket.isBound) {
+                        socket.bind(InetSocketAddress(a, 0))
+                        return
                     }
                 }
             }

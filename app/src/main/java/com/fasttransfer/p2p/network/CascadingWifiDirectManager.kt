@@ -74,7 +74,6 @@ class CascadingWifiDirectManager(
     private val lastKnownP2pFreqMhz = AtomicInteger(0)
     private val cachedGroupCredentials = AtomicReference<P2pGroupCredentials?>(null)
     private val discoveredP2pPeers = mutableMapOf<String, PeerDevice>()
-    private val groupEventSignal = Object()
 
     fun shouldSkipP2pBecauseHotspotOrWifiOff(): Boolean {
         if (CompatibilityHelper.isMobileHotspotActive(context)) return true
@@ -109,7 +108,7 @@ class CascadingWifiDirectManager(
                 latch.countDown()
             }
             try {
-                latch.await(90L, TimeUnit.MILLISECONDS)
+                latch.await(120L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
             val queried = lastKnownP2pFreqMhz.get()
@@ -199,9 +198,6 @@ class CascadingWifiDirectManager(
                     }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    synchronized(groupEventSignal) {
-                        groupEventSignal.notifyAll()
-                    }
                     val ch = channel ?: return
                     val p2pInfo = CompatibilityHelper.getParcelableExtraCompat(
                         intent,
@@ -268,9 +264,6 @@ class CascadingWifiDirectManager(
                         )
                     )
                 }
-            }
-            synchronized(groupEventSignal) {
-                groupEventSignal.notifyAll()
             }
             onDirectConnectionReady(ownerIp, p2pInfo.isGroupOwner, bandDesc)
         }
@@ -430,7 +423,7 @@ class CascadingWifiDirectManager(
             initialCheckLatch.countDown()
         }
         try {
-            initialCheckLatch.await(120L, TimeUnit.MILLISECONDS)
+            initialCheckLatch.await(200L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
         cachedGroupCredentials.get()?.let {
@@ -539,7 +532,7 @@ class CascadingWifiDirectManager(
                 latch.countDown()
             }
             try {
-                latch.await(90L, TimeUnit.MILLISECONDS)
+                latch.await(150L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
             val readyCreds = cachedGroupCredentials.get()
@@ -550,11 +543,10 @@ class CascadingWifiDirectManager(
                 negotiatingUntilMs = 0L
                 return readyCreds
             }
-            synchronized(groupEventSignal) {
-                try {
-                    groupEventSignal.wait(35L)
-                } catch (_: Throwable) {
-                }
+            try {
+                Thread.sleep(90L)
+            } catch (_: Throwable) {
+                break
             }
         }
         negotiatingUntilMs = 0L
@@ -571,7 +563,7 @@ class CascadingWifiDirectManager(
 
     /**
      * Silently joins the peer's Autonomous 5 GHz / 6 GHz Group using exact single-frequency scan
-     * (setGroupOperatingFrequency) first, falling back to band scan ONLY on immediate ActionListener.onFailure.
+     * (setGroupOperatingFrequency) first, falling back to band scan if needed.
      */
     fun joinAutonomousGroupSilentlyBlocking(
         creds: P2pGroupCredentials,
@@ -599,12 +591,13 @@ class CascadingWifiDirectManager(
                     override fun onSuccess() { rmLatch.countDown() }
                     override fun onFailure(reason: Int) { rmLatch.countDown() }
                 })
-                rmLatch.await(380L, TimeUnit.MILLISECONDS)
+                rmLatch.await(450L, TimeUnit.MILLISECONDS)
             } catch (_: Throwable) {
             }
-            for (w in 0 until 12) {
+            // Wait until the old 192.168.49.1 interface is completely torn down before calling connect()
+            for (w in 0 until 8) {
                 if (CompatibilityHelper.getLocalP2pInterfaceIp() == null) break
-                try { Thread.sleep(35L) } catch (_: Throwable) {}
+                try { Thread.sleep(70L) } catch (_: Throwable) {}
             }
         }
 
@@ -627,6 +620,7 @@ class CascadingWifiDirectManager(
                     WifiP2pConfig.GROUP_OWNER_BAND_AUTO
                 }
 
+                // Try exact frequency first (setGroupOperatingFrequency scans ONLY that 1 channel -> ~200ms join!)
                 val exactFreqConfig = if (creds.freqMhz >= 2412) {
                     try {
                         WifiP2pConfig.Builder()
@@ -683,15 +677,11 @@ class CascadingWifiDirectManager(
                 negotiatingUntilMs = 0L
                 return true
             }
-            var waitInterrupted = false
-            synchronized(groupEventSignal) {
-                try {
-                    groupEventSignal.wait(30L)
-                } catch (_: Throwable) {
-                    waitInterrupted = true
-                }
+            try {
+                Thread.sleep(85L)
+            } catch (_: Throwable) {
+                break
             }
-            if (waitInterrupted) break
         }
 
         negotiatingUntilMs = 0L
@@ -824,9 +814,9 @@ class CascadingWifiDirectManager(
     private fun startFastConnectionCompletionPoller(mgr: WifiP2pManager, ch: WifiP2pManager.Channel) {
         connectionPollJob?.cancel()
         connectionPollJob = scope.launch {
-            for (i in 0 until 80) {
+            for (i in 0 until 55) {
                 if (!isActive) break
-                delay(120L)
+                delay(220L)
                 val p2pIp = CompatibilityHelper.getLocalP2pInterfaceIp()
                 if (!p2pIp.isNullOrBlank()) {
                     mainHandler.post {

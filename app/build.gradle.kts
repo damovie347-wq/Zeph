@@ -11,8 +11,8 @@ android {
         applicationId = "com.fasttransfer.p2p"
         minSdk = 21
         targetSdk = 34
-        versionCode = 5
-        versionName = "5.0.0-Master"
+        versionCode = 6
+        versionName = "5.1.0-Master (v12.1)"
 
         vectorDrawables {
             useSupportLibrary = true

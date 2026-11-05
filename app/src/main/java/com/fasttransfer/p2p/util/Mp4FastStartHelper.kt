@@ -189,7 +189,8 @@ object Mp4FastStartHelper {
 
             val finalPartialSize = contiguousBytesWritten + writtenMoov
             fc.truncate(finalPartialSize)
-            fc.force(true)
+            // v12.1: fsync (force) kaldırıldı. Oynatıcı başka bir süreçte olsa da sayfa önbelleği üzerinden tutarlı okur;
+            // fsync yalnızca ani güç kaybına karşıdır ve iptal/duraklatma sonlandırmasını saniyelerce geciktirirdi.
             finalPartialSize
         } catch (_: Throwable) {
             contiguousBytesWritten

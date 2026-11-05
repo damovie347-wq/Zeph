@@ -91,6 +91,10 @@ class MainActivity : AppCompatActivity() {
     private var isAdvancedStatsExpanded: Boolean = false
     private var isTransferCurrentlyFinishedOrStopped: Boolean = false
 
+    // İptal tuşuna basıldı ama motor kısmi dosyayı henüz SONLANDIRMADI (truncate / önizleme kuyruğu / alıcı onayı).
+    // Bu sürede "Korundu" yazmak yanıltıcıdır ve kullanıcı uygulamayı erken kapatıp dosyayı yarım bırakabilir.
+    private var awaitingFinalPartialStatus: Boolean = false
+
     private var skeletonAnimationJob: Job? = null
 
     private val permissionLauncher = registerForActivityResult(
@@ -525,21 +529,22 @@ class MainActivity : AppCompatActivity() {
             p2pWaitClientJob?.cancel()
             transferEngine.cancelAndPreservePartialFile()
             isTransferCurrentlyFinishedOrStopped = true
+            awaitingFinalPartialStatus = true
             binding.btnPauseResumeTransfer.visibility = View.GONE
             binding.tvCancelOrDoneLabel.text = "Kapat"
-            binding.tvTransferTitle.text = "Kısmi Dosya Korundu"
+            // v12: burada hemen "Kısmi Dosya Korundu" yazılıyordu; oysa dosya henüz sonlandırılmamıştı.
+            binding.tvTransferTitle.text = "Kısmi dosya kaydediliyor…"
+            binding.tvTransferEta.text = "Kesin boyut doğrulanıyor, lütfen uygulamayı kapatmayın."
             lifecycleScope.launch {
-                delay(180L)
-                if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
-                    binding.btnOpenPartialFile.visibility = View.VISIBLE
-                    binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
+                // Motor son durumu (kesin kısmi boyutla) bildirmezse (örn. onay/müzakere sırasında iptal) kullanıcıyı
+                // sonsuza dek "kaydediliyor"da bırakma.
+                delay(3500L)
+                if (awaitingFinalPartialStatus) {
+                    awaitingFinalPartialStatus = false
+                    binding.tvTransferTitle.text = "Aktarım İptal Edildi"
+                    binding.tvTransferEta.text = ""
                 }
             }
-            Toast.makeText(
-                this,
-                "Aktarım durduruldu! O ana kadar inen kısmi dosya korundu.",
-                Toast.LENGTH_SHORT
-            ).show()
         }
 
         binding.btnDismissTransferCard.setOnClickListener {
@@ -561,6 +566,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTransferSessionOverlay(isSending: Boolean, initialFileName: String, initialFileSize: Long) {
         isTransferCurrentlyFinishedOrStopped = false
+        awaitingFinalPartialStatus = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
             "6-Kanallı Lockless DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
@@ -1047,6 +1053,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderTransferProgress(progress: TransferProgress) {
+        // İptalden sonra gelen BAYAT güncellemeler (uçuştaki TRANSFERRING/PAUSED) arayüzü geri çevirmesin.
+        if (awaitingFinalPartialStatus &&
+            (progress.status == TransferStatus.TRANSFERRING ||
+                progress.status == TransferStatus.PAUSED ||
+                progress.status == TransferStatus.CONNECTING ||
+                progress.status == TransferStatus.WAITING_APPROVAL)
+        ) {
+            return
+        }
         if (binding.overlayTransferSession.visibility != View.VISIBLE && progress.status != TransferStatus.IDLE) {
             showTransferSessionOverlay(
                 isSending = progress.isSending,
@@ -1097,14 +1112,25 @@ class MainActivity : AppCompatActivity() {
             }
             TransferStatus.PAUSED -> {
                 binding.tvTransferTitle.text = "Toplam ilerleme (Duraklatıldı)"
-                if (!lastSavedOrPartialFilePath.isNullOrEmpty()) {
+                if (!progress.message.isNullOrEmpty()) {
+                    binding.tvTransferEta.text = progress.message
+                }
+                // Önizleme kuyruğu hazır olmadan "Aç" gösterilirse geçersiz/yarım bir dosya açılabilir.
+                if (progress.previewReady && !lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
                     binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
+                } else {
+                    binding.btnOpenPartialFile.visibility = View.GONE
                 }
             }
             TransferStatus.PARTIAL_PRESERVED -> {
                 isTransferCurrentlyFinishedOrStopped = true
-                binding.tvTransferTitle.text = "Kısmi Dosya Korundu (%${progress.progressPercent})"
+                awaitingFinalPartialStatus = false
+                binding.tvTransferTitle.text = if (progress.bytesTransferred > 0L) {
+                    "Kısmi Dosya Korundu (%${progress.progressPercent})"
+                } else {
+                    "Aktarım İptal Edildi"
+                }
                 binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
                 binding.tvCancelOrDoneLabel.text = "Kapat"
@@ -1115,6 +1141,7 @@ class MainActivity : AppCompatActivity() {
             }
             TransferStatus.COMPLETED -> {
                 isTransferCurrentlyFinishedOrStopped = true
+                awaitingFinalPartialStatus = false
                 binding.progressSessionItem.progress = 100
                 binding.progressBarTransfer.progress = 100
                 if (!isAdvancedStatsExpanded) {
@@ -1139,6 +1166,7 @@ class MainActivity : AppCompatActivity() {
             }
             TransferStatus.REJECTED -> {
                 isTransferCurrentlyFinishedOrStopped = true
+                awaitingFinalPartialStatus = false
                 binding.tvTransferTitle.text = "İstek Reddedildi"
                 binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE
@@ -1146,6 +1174,7 @@ class MainActivity : AppCompatActivity() {
             }
             TransferStatus.ERROR -> {
                 isTransferCurrentlyFinishedOrStopped = true
+                awaitingFinalPartialStatus = false
                 binding.tvTransferTitle.text = "Bağlantı Kurulamadı"
                 binding.tvTransferEta.text = progress.message ?: ""
                 binding.btnPauseResumeTransfer.visibility = View.GONE

@@ -47,6 +47,7 @@ import java.util.BitSet
 import java.util.Collections
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentSkipListMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -78,11 +79,15 @@ class ZeroCopyTransferEngine(
         const val STRIPE_BYTES = 1 * 1024 * 1024 // 1 MB Fine-Grained Stripe Unit (Zero HoL Stall)
         const val REORDER_RING_BUFFERS = 64 // 64 x 1 MB = 64 MB Off-Heap Reorder Pool
         const val PARALLEL_DATA_STREAMS = 6 // 6 Parallel TCP SocketChannels across 6 CPU Cores
-        private const val OUT_OF_ORDER_FLUSH_THRESHOLD = 12 // 2 full 6-stream rounds before out-of-order pwrite
         private const val PROTOCOL_MAGIC = 0x5A45503A // "ZEP:" Control & Handshake Channel
         private const val PROTOCOL_MAGIC_TURBO_DATA = 0x5A455054 // "ZEPT" Parallel Data Channel
         private const val DECISION_ACCEPTED: Int = 1
         private const val DECISION_REJECTED: Int = 2
+
+        // Wi-Fi Direct yükseltmesi (grup kurma + katılma ≈ 2-7 sn) yalnızca kazanç kurulum maliyetini aşıyorsa denenir.
+        // Router üzerinden (~40-55 MB/s) doğrudan P2P'ye (~70-95 MB/s) geçişin getirdiği ≈ 10 ms/MB kazançla
+        // başa baş noktası ~300 MB'dir; altındaki transferlerde yükseltme net kayıptır, LAN anında başlar.
+        const val UPGRADE_MIN_TOTAL_BYTES = 384L * 1024L * 1024L
     }
 
     private data class IndependentFileHandle(
@@ -107,6 +112,11 @@ class ZeroCopyTransferEngine(
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wifiPerfLock: WifiManager.WifiLock? = null
+
+    // Alıcı dosya sonlandırması (truncate/önizleme kuyruğu/ack) bitene kadar stop() bekleyebilsin diye.
+    @Volatile
+    private var receiverFinalizeLatch: CountDownLatch? = null
 
     private val isPaused = AtomicBoolean(false)
 
@@ -134,50 +144,11 @@ class ZeroCopyTransferEngine(
     @Volatile
     private var activeConsentLatch: CountDownLatch? = null
 
-    // Pre-allocated Reusable DirectByteBuffer Pools (Zero Page-Fault Allocation Stall on Transfer Start)
-    private val poolLock = Object()
-    private var reusableReceiverPool: List<ByteBuffer>? = null
-    private var reusableSenderPool: List<ByteBuffer>? = null
-
     val historyRecords: MutableList<TransferHistoryRecord> =
         Collections.synchronizedList(mutableListOf())
 
     @Volatile
     private var sharedLinkItems: List<TransferItem> = emptyList()
-
-    private fun obtainReceiverBufferPool(): List<ByteBuffer> {
-        synchronized(poolLock) {
-            var pool = reusableReceiverPool
-            if (pool == null) {
-                pool = List(REORDER_RING_BUFFERS) {
-                    ByteBuffer.allocateDirect(STRIPE_BYTES)
-                }
-                reusableReceiverPool = pool
-            } else {
-                for (buf in pool) {
-                    buf.clear()
-                }
-            }
-            return pool
-        }
-    }
-
-    private fun obtainSenderBufferPool(): List<ByteBuffer> {
-        synchronized(poolLock) {
-            var pool = reusableSenderPool
-            if (pool == null) {
-                pool = List(PARALLEL_DATA_STREAMS) {
-                    ByteBuffer.allocateDirect(STRIPE_BYTES)
-                }
-                reusableSenderPool = pool
-            } else {
-                for (buf in pool) {
-                    buf.clear()
-                }
-            }
-            return pool
-        }
-    }
 
     fun startServer() {
         startIndestructibleZeroCopyServer()
@@ -209,7 +180,9 @@ class ZeroCopyTransferEngine(
                     "Zeph::DirectTransferWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(20 * 60 * 1000L)
+                    // 20 dk, ~100 GB'lık transferlerde (≈19 dk) CPU kilidini transfer ortasında düşürebiliyordu.
+                    // Kilit her oturum sonunda zaten bırakılır; 4 saat yalnızca çökme durumundaki güvenlik tavanıdır.
+                    acquire(4 * 60 * 60 * 1000L)
                 }
             }
         } catch (_: Throwable) {
@@ -222,6 +195,13 @@ class ZeroCopyTransferEngine(
                     "Zeph::DirectTransferWifiLock"
                 ).apply {
                     setReferenceCounted(false)
+                    acquire()
+                }
+            }
+            // LOW_LATENCY kilidi yalnızca ekran açık + uygulama ön plandayken aktiftir (AOSP javadoc).
+            // HIGH_PERF kilidi ekran kapalıyken/arka planda da Wi-Fi güç tasarrufunu engeller; ikisi birlikte alınır.
+            if (wm != null && wifiPerfLock == null) {
+                wifiPerfLock = CompatibilityHelper.createHighPerfWifiLock(wm, "Zeph::DirectTransferWifiPerfLock")?.apply {
                     acquire()
                 }
             }
@@ -238,6 +218,11 @@ class ZeroCopyTransferEngine(
         try {
             wifiLock?.let { if (it.isHeld) it.release() }
             wifiLock = null
+        } catch (_: Throwable) {
+        }
+        try {
+            wifiPerfLock?.let { if (it.isHeld) it.release() }
+            wifiPerfLock = null
         } catch (_: Throwable) {
         }
     }
@@ -261,10 +246,24 @@ class ZeroCopyTransferEngine(
         activeReceiverWorkerChannels.clear()
 
         scope.launch {
+            // Veri soketleri anında RST ile kesilir: karşı taraf hemen durur (v12 davranışı).
             sWorkers.forEach { abortChannelWithRst(it) }
             rWorkers.forEach { abortChannelWithRst(it) }
-            abortChannelWithRst(sChan)
-            abortChannelWithRst(rChan)
+            val inDataPhase = sWorkers.isNotEmpty() || rWorkers.isNotEmpty()
+            if (!inDataPhase) {
+                // Henüz veri fazı yok (onay/müzakere): kontrol kanalındaki bloklu okumaları hemen serbest bırak.
+                abortChannelWithRst(sChan)
+                abortChannelWithRst(rChan)
+            } else {
+                // Veri fazında kontrol kanalı bir süre AÇIK kalır: alıcı, diskte KORUNAN bayt sayısını göndericiye
+                // bildirebilsin ve iki cihazda da aynı kısmi boyut görünsün. Sonlandırma takılırsa güvenlik ağı:
+                try {
+                    delay(4000L)
+                } catch (_: Throwable) {
+                }
+                abortChannelWithRst(sChan)
+                abortChannelWithRst(rChan)
+            }
         }
     }
 
@@ -348,33 +347,6 @@ class ZeroCopyTransferEngine(
         return true
     }
 
-    /**
-     * Coalesces the 8-byte stripe header and the 4096-byte page-aligned 1 MB stripe payload
-     * into a single kernel writev() scatter/gather syscall while keeping payloadBuf at position = 0
-     * during Os.pread!
-     */
-    private fun writeHeaderAndPayloadGather(
-        ch: SocketChannel,
-        hdrBuf: ByteBuffer,
-        payloadBuf: ByteBuffer,
-        iov: Array<ByteBuffer>,
-        totalBytesSentAtomic: AtomicLong,
-        sessionCancel: AtomicBoolean
-    ): Boolean {
-        iov[0] = hdrBuf
-        iov[1] = payloadBuf
-        while ((hdrBuf.hasRemaining() || payloadBuf.hasRemaining()) && !sessionCancel.get()) {
-            val prevPayloadPos = payloadBuf.position()
-            val written = ch.write(iov, 0, 2)
-            if (written < 0L) return false
-            val payloadDelta = payloadBuf.position() - prevPayloadPos
-            if (payloadDelta > 0) {
-                totalBytesSentAtomic.addAndGet(payloadDelta.toLong())
-            }
-        }
-        return !sessionCancel.get() && !payloadBuf.hasRemaining()
-    }
-
     private fun openIndependentFileHandle(item: TransferItem): IndependentFileHandle? {
         try {
             if (item.directFile != null && item.directFile.exists()) {
@@ -435,6 +407,50 @@ class ZeroCopyTransferEngine(
             readTotal += r
         }
         return readTotal
+    }
+
+    /**
+     * Alıcı tarafı darboğaz analizi (yalnızca gözlem). Yazıcı thread'in pwrite süresi kapasiteyi, bekleme süreleri de
+     * sınırı belirleyen kaynağı gösterir:
+     *  - yazıcı >= %85 meşgul  -> DİSK (UFS/FUSE) yazma sınırı
+     *  - yazıcı >= %35 boşta    -> AĞ/Wi-Fi (veri gelmesini bekliyor)
+     */
+    private fun receiverDiagLine(
+        elapsedNs: Long,
+        writeNs: Long,
+        writeBytes: Long,
+        poolWaitNs: Long,
+        idleNs: Long,
+        readers: Int
+    ): String {
+        if (elapsedNs <= 0L || writeBytes <= 0L || writeNs <= 0L) return ""
+        val capMbps = (writeBytes / (1024.0 * 1024.0)) / (writeNs / 1_000_000_000.0)
+        val busy = (100.0 * writeNs / elapsedNs).coerceIn(0.0, 100.0)
+        val idle = (100.0 * idleNs / elapsedNs).coerceIn(0.0, 100.0)
+        val readerBlocked = if (readers > 0) {
+            (100.0 * poolWaitNs / (elapsedNs.toDouble() * readers)).coerceIn(0.0, 100.0)
+        } else {
+            0.0
+        }
+        val verdict = when {
+            busy >= 85.0 -> "Sınır: DİSK YAZMA"
+            idle >= 35.0 -> "Sınır: AĞ/Wi-Fi"
+            else -> "Dengeli"
+        }
+        return String.format(
+            "Analiz (alıcı): %s • disk yazma kapasitesi %.0f MB/s • yazıcı %%%.0f meşgul / %%%.0f bekliyor • okuyucu tıkanma %%%.0f",
+            verdict, capMbps, busy, idle, readerBlocked
+        )
+    }
+
+    private fun describeIoFailure(t: Throwable?): String? {
+        if (t == null) return null
+        val msg = (t.message ?: t.toString())
+        return if (msg.contains("ENOSPC") || msg.contains("No space left", ignoreCase = true)) {
+            "Neden: depolama alanı doldu."
+        } else {
+            "Neden: disk yazma hatası (" + msg.take(80) + ")."
+        }
     }
 
     private fun computeSustainedSpeedMbps(
@@ -536,14 +552,8 @@ class ZeroCopyTransferEngine(
         currentCancelFlag = sessionCancel
         activeReceiverChannel = clientChannel
         isPaused.set(false)
-
-        // Pre-warm the 64 MB DirectByteBuffer pool in the background during user consent
-        scope.launch {
-            try {
-                obtainReceiverBufferPool()
-            } catch (_: Throwable) {
-            }
-        }
+        val finalizeLatch = CountDownLatch(1)
+        receiverFinalizeLatch = finalizeLatch
 
         try {
             val socket = clientChannel.socket()
@@ -573,8 +583,14 @@ class ZeroCopyTransferEngine(
             val receiverGoScore = CompatibilityHelper.getDeviceGoCapabilityScore(context)
             val preferReceiverAsGo = receiverGoScore >= senderGoScore
 
+            // Yükseltme politikası: (1) bağlantı zaten doğrudan değilse (hotspot/P2P) VE (2) toplam boyut başa baş
+            // noktasını aşıyorsa VE (3) kullanıcı yüksek bant tercihini kapatmadıysa denenir. Aksi halde LAN/hotspot
+            // üzerinden ANINDA başlanır (v12: her LAN transferinde 3-15 sn müzakere).
+            val upgradeWorthIt = totalBatchBytes >= UPGRADE_MIN_TOTAL_BYTES
+            val upgradeAllowed = !isAlreadyDirectLink && upgradeWorthIt && isHighBandUpgradeEnabled()
+
             val p2pGroupDeferred = CompletableDeferred<P2pGroupCredentials?>()
-            if (!isAlreadyDirectLink && isHighBandUpgradeEnabled() && preferReceiverAsGo) {
+            if (upgradeAllowed && preferReceiverAsGo) {
                 scope.launch {
                     try {
                         val creds = onPrepareP2pGroup()
@@ -640,18 +656,20 @@ class ZeroCopyTransferEngine(
             dos.writeLong(sessionToken)
 
             val receiverP2pCreds: P2pGroupCredentials? = runBlocking {
-                withTimeoutOrNull(2800L) {
+                withTimeoutOrNull(3000L) {
                     p2pGroupDeferred.await()
                 }
             }
 
             // Phase A: Offer Receiver-GO if Receiver formed a valid 5 GHz group (<= 32 byte SSID)
             var upgradedToP2p = false
+            var phaseAOffered = false
             if (receiverP2pCreds != null &&
-                !isAlreadyDirectLink &&
+                upgradeAllowed &&
                 receiverP2pCreds.ssid.toByteArray(Charsets.UTF_8).size <= 32 &&
                 receiverP2pCreds.freqMhz >= 5000
             ) {
+                phaseAOffered = true
                 dos.writeBoolean(true)
                 dos.writeUTF(receiverP2pCreds.ssid)
                 dos.writeUTF(receiverP2pCreds.passphrase)
@@ -678,7 +696,10 @@ class ZeroCopyTransferEngine(
             }
 
             // Phase B: Bidirectional Role-Reversal!
-            val allowSenderGoFallback = !isAlreadyDirectLink && !upgradedToP2p && isHighBandUpgradeEnabled()
+            // v12: Faz A denenip başarısız olsa bile Faz B de denenirdi (ek ≈ 8 sn; Faz A'yı bozan eşzamanlılık/radyo
+            // sorunu çoğunlukla Faz B'yi de bozar). Şimdi Faz B yalnızca Faz A HİÇ denenmediyse (alıcı GO olamadıysa veya
+            // gönderici daha yetenekliyse) yapılır; Faz A başarısızsa doğrudan LAN'a düşülür.
+            val allowSenderGoFallback = upgradeAllowed && !upgradedToP2p && !phaseAOffered
             dos.writeBoolean(allowSenderGoFallback)
             dos.flush()
 
@@ -709,13 +730,13 @@ class ZeroCopyTransferEngine(
                     val joinedSenderGo = onJoinP2pGroup(senderCreds)
                     var myP2pClientIp: String? = null
                     if (joinedSenderGo) {
-                        for (waitIdx in 0 until 50) {
+                        for (waitIdx in 0 until 22) {
                             val ip = CompatibilityHelper.getLocalP2pInterfaceIp()
                             if (!ip.isNullOrBlank() && ip != "192.168.49.1") {
                                 myP2pClientIp = ip
                                 break
                             }
-                            Thread.sleep(30L)
+                            Thread.sleep(75L)
                         }
                     }
 
@@ -747,14 +768,14 @@ class ZeroCopyTransferEngine(
             }
 
             if (senderOpenedStreams > 0) {
-                val deadline = System.currentTimeMillis() + 3000L
+                val deadline = System.currentTimeMillis() + 3200L
                 synchronized(incomingTurboLock) {
                     while (incomingTurboPool.size < senderOpenedStreams &&
                         System.currentTimeMillis() < deadline &&
                         !sessionCancel.get()
                     ) {
                         val rem = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
-                        incomingTurboLock.wait(rem.coerceAtMost(60L))
+                        incomingTurboLock.wait(rem.coerceAtMost(120L))
                     }
                 }
             }
@@ -771,7 +792,6 @@ class ZeroCopyTransferEngine(
             dos.flush()
 
             val singleDirectBuf = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
-            val preallocatedPool = obtainReceiverBufferPool()
 
             // 5. Receive Each File
             for (fileIdx in 0 until fileCount) {
@@ -811,6 +831,15 @@ class ZeroCopyTransferEngine(
                 var lastUiUpdateMs = 0L
                 val speedSamples = ConcurrentLinkedDeque<Pair<Long, Long>>()
 
+                // --- Ölçüm sayaçları (yalnızca gözlem; veri yolunu değiştirmez): darboğazın DİSK mi AĞ mı olduğunu gösterir ---
+                val diagWriteNs = AtomicLong(0L)      // yazıcı thread'in pwrite içinde geçirdiği süre
+                val diagWriteBytes = AtomicLong(0L)   // pwrite ile yazılan bayt
+                val diagPoolWaitNs = AtomicLong(0L)   // reader'ların boş buffer beklediği süre (disk geri-basıncı)
+                val diagWriterIdleNs = AtomicLong(0L) // yazıcının veri beklediği süre (ağ/gönderici sınırı)
+                var receiveFailure: Throwable? = null
+                val linkSampler = LinkSampler(context, senderIp)
+                linkSampler.start()
+
                 var raf: RandomAccessFile? = null
                 var fileChannel: FileChannel? = null
 
@@ -822,16 +851,18 @@ class ZeroCopyTransferEngine(
 
                     if (useParallelStripes && workerChannels.isNotEmpty() && expectedFileSize > 0L) {
                         val totalStripes = ((expectedFileSize + STRIPE_BYTES - 1L) / STRIPE_BYTES.toLong()).toInt()
-                        val freeBuffers = ArrayBlockingQueue<ByteBuffer>(REORDER_RING_BUFFERS)
-                        for (buf in preallocatedPool) {
-                            buf.clear()
-                            freeBuffers.put(buf)
+                        // Havuz dosyanın ihtiyacına göre boyutlanır: 5 MB'lık dosya için 64 MB direct buffer
+                        // tahsis edip sıfırlamak (ve çöpe atmak) toplu transferlerde saniyeler kaybettirir.
+                        val poolSize = minOf(REORDER_RING_BUFFERS, totalStripes + workerChannels.size)
+                        val spillThreshold = maxOf(4, poolSize / 2)
+                        val freeBuffers = ArrayBlockingQueue<ByteBuffer>(poolSize)
+                        for (i in 0 until poolSize) {
+                            freeBuffers.put(ByteBuffer.allocateDirect(STRIPE_BYTES))
                         }
 
                         val completedStripes = ConcurrentSkipListMap<Int, ByteBuffer>()
                         val writtenStripesBitSet = BitSet(totalStripes + 8)
                         var nextContiguousStripe = 0
-                        var partialTailBytesInNextStripe = 0L
                         val activeReaders = AtomicInteger(workerChannels.size)
                         val writerError = AtomicBoolean(false)
                         val reorderLock = Object()
@@ -854,9 +885,11 @@ class ZeroCopyTransferEngine(
                                         }
 
                                         var dataBuf: ByteBuffer? = null
+                                        val poolWaitStartNs = System.nanoTime()
                                         while (dataBuf == null && !sessionCancel.get() && !writerError.get()) {
-                                            dataBuf = freeBuffers.poll(60L, TimeUnit.MILLISECONDS)
+                                            dataBuf = freeBuffers.poll(80L, TimeUnit.MILLISECONDS)
                                         }
+                                        diagPoolWaitNs.addAndGet(System.nanoTime() - poolWaitStartNs)
                                         if (dataBuf == null) break
 
                                         dataBuf.clear()
@@ -872,11 +905,17 @@ class ZeroCopyTransferEngine(
                                         }
 
                                         dataBuf.flip()
-                                        val readLen = dataBuf.remaining()
-                                        if (readLen == stripeLen || (readLen > 0 && (eofReached || sessionCancel.get()))) {
-                                            completedStripes[stripeIdx] = dataBuf
-                                            synchronized(reorderLock) {
-                                                reorderLock.notifyAll()
+                                        if (dataBuf.remaining() == stripeLen) {
+                                            // putIfAbsent: aynı stripe iki kez gelirse (gönderici hatalı bir soketten yeniden
+                                            // kuyruğa aldıysa) ikincisi havuzu SIZDIRMADAN geri dönüştürülür.
+                                            val prev = completedStripes.putIfAbsent(stripeIdx, dataBuf)
+                                            if (prev != null) {
+                                                dataBuf.clear()
+                                                freeBuffers.offer(dataBuf)
+                                            } else {
+                                                synchronized(reorderLock) {
+                                                    reorderLock.notifyAll()
+                                                }
                                             }
                                         } else {
                                             dataBuf.clear()
@@ -899,93 +938,121 @@ class ZeroCopyTransferEngine(
                             }
                         }
 
-                        // Dedicated Single UFS Writer Thread (Zero Multi-Thread FUSE Contention + Zero Busy-Spin!)
-                        var pauseTailApplied = false
+                        // Bir stripe'ı diske işler. writtenStripesBitSet, "stripe i diskte geçerli" bilgisinin TEK doğruluk
+                        // kaynağıdır ve hiçbir koşulda (duraklat/devam dahil) geri alınmaz/temizlenmez.
+                        fun commitStripe(idx: Int, buf: ByteBuffer) {
+                            if (writtenStripesBitSet.get(idx)) {
+                                buf.clear()
+                                freeBuffers.offer(buf)
+                                return
+                            }
+                            val expectLen = buf.remaining()
+                            val t0 = System.nanoTime()
+                            val w = writeBufferAtOffsetSingleThread(rawFd, fc, buf, idx.toLong() * STRIPE_BYTES.toLong())
+                            diagWriteNs.addAndGet(System.nanoTime() - t0)
+                            if (w != expectLen.toLong()) {
+                                throw java.io.IOException("Kısa yazma: $w / $expectLen bayt (stripe $idx)")
+                            }
+                            diagWriteBytes.addAndGet(w)
+                            totalBytesWrittenAtomic.addAndGet(w)
+                            buf.clear()
+                            freeBuffers.offer(buf)
+                            writtenStripesBitSet.set(idx)
+                            if (idx == nextContiguousStripe) {
+                                nextContiguousStripe = writtenStripesBitSet.nextClearBit(nextContiguousStripe + 1)
+                            }
+                        }
+
+                        // Dedicated Single UFS Writer Thread (Zero Multi-Thread FUSE Contention + Zero HoL Stall!)
+                        var previewApplied = false
+                        var previewWatermarkBytes = 0L
+                        var wasPaused = false
+                        var lastPausedUiMs = 0L
                         while (nextContiguousStripe < totalStripes && !sessionCancel.get() && !writerError.get()) {
                             while (isPaused.get() && !sessionCancel.get()) {
-                                if (!pauseTailApplied) {
-                                    pauseTailApplied = true
+                                wasPaused = true
+                                if (!previewApplied) {
                                     try {
-                                        val drainDeadline = System.currentTimeMillis() + 180L
-                                        while (System.currentTimeMillis() < drainDeadline) {
-                                            val entry = completedStripes.pollFirstEntry()
-                                            if (entry != null) {
-                                                val sIdx = entry.key
-                                                val buf = entry.value
-                                                val expectedLen = (expectedFileSize - (sIdx.toLong() * STRIPE_BYTES.toLong()))
-                                                    .coerceAtMost(STRIPE_BYTES.toLong()).toInt()
-                                                val bufLen = buf.remaining()
-                                                val offset = sIdx.toLong() * STRIPE_BYTES.toLong()
-                                                val w = writeBufferAtOffsetSingleThread(rawFd, fc, buf, offset)
-                                                totalBytesWrittenAtomic.addAndGet(w)
-                                                buf.clear()
-                                                freeBuffers.offer(buf)
-                                                if (w == expectedLen.toLong() && bufLen == expectedLen) {
-                                                    writtenStripesBitSet.set(sIdx)
-                                                    if (sIdx == nextContiguousStripe) {
-                                                        nextContiguousStripe = writtenStripesBitSet.nextClearBit(nextContiguousStripe + 1)
-                                                    }
-                                                }
-                                            } else {
-                                                Thread.sleep(12L)
-                                            }
+                                        // DURAKLATMA MODU: yalnızca BİTİŞİK stripe'lar diske yazılır; sıra dışı gelenler bellekte
+                                        // bekler. Böylece diskte watermark ötesinde veri kalmaz ve önizleme kuyruğunun
+                                        // truncate'i hiçbir geçerli veriyi yok edemez (v12'de edebiliyordu).
+                                        while (true) {
+                                            val pend = completedStripes.remove(nextContiguousStripe) ?: break
+                                            commitStripe(nextContiguousStripe, pend)
+                                        }
+                                        // Havuz tıkanmasın (reader'lar boş buffer bulamayıp delikteki stripe'ı okuyamaz):
+                                        // kuyruk eşiği aşılırsa en düşük stripe diske yazılır (v12'nin Anti-HoL ilkesi).
+                                        if (completedStripes.size >= spillThreshold) {
+                                            val first = completedStripes.pollFirstEntry()
+                                            if (first != null) commitStripe(first.key, first.value)
                                         }
                                         val contiguousNow = (nextContiguousStripe.toLong() * STRIPE_BYTES.toLong())
                                             .coerceAtMost(expectedFileSize)
                                         contiguousWatermarkBytes.set(contiguousNow)
-                                        if (mp4Meta != null && contiguousNow > 0L && contiguousNow < expectedFileSize) {
-                                            Mp4FastStartHelper.applyPartialMoovTail(fc, contiguousNow, mp4Meta)
-                                        } else {
-                                            fc.force(true)
+                                        // Önizleme (moov kuyruğu) YALNIZCA watermark ötesinde diske yazılmış stripe yoksa uygulanır.
+                                        if (writtenStripesBitSet.nextSetBit(nextContiguousStripe) < 0) {
+                                            if (mp4Meta != null && contiguousNow > 0L && contiguousNow < expectedFileSize) {
+                                                Mp4FastStartHelper.applyPartialMoovTail(fc, contiguousNow, mp4Meta)
+                                            }
+                                            previewApplied = true
+                                            previewWatermarkBytes = contiguousNow
                                         }
-                                    } catch (_: Throwable) {
+                                    } catch (t: Throwable) {
+                                        receiveFailure = t
+                                        writerError.set(true)
                                     }
                                 }
-                                onProgressUpdate(
-                                    TransferProgress(
-                                        fileName = targetFile.name,
-                                        fileIndex = fileIdx,
-                                        totalFiles = fileCount,
-                                        bytesTransferred = contiguousWatermarkBytes.get(),
-                                        totalBytes = expectedFileSize,
-                                        speedMbps = 0.0,
-                                        etaSeconds = 0L,
-                                        elapsedMillis = System.currentTimeMillis() - startWallMs,
-                                        status = TransferStatus.PAUSED,
-                                        transportLabel = transportLabel,
-                                        isSending = false,
-                                        savedFilePath = targetFile.absolutePath,
-                                        message = "Transfer Duraklatıldı (Oynatmaya Hazır)"
+                                val nowPauseMs = System.currentTimeMillis()
+                                if (nowPauseMs - lastPausedUiMs >= 120L) {
+                                    lastPausedUiMs = nowPauseMs
+                                    onProgressUpdate(
+                                        TransferProgress(
+                                            fileName = targetFile.name,
+                                            fileIndex = fileIdx,
+                                            totalFiles = fileCount,
+                                            bytesTransferred = contiguousWatermarkBytes.get(),
+                                            totalBytes = expectedFileSize,
+                                            speedMbps = 0.0,
+                                            etaSeconds = 0L,
+                                            elapsedMillis = nowPauseMs - startWallMs,
+                                            status = TransferStatus.PAUSED,
+                                            transportLabel = transportLabel,
+                                            isSending = false,
+                                            savedFilePath = targetFile.absolutePath,
+                                            previewReady = previewApplied,
+                                            message = when {
+                                                !previewApplied -> "Transfer Duraklatıldı (uçuştaki parçalar bekleniyor…)"
+                                                mp4Meta != null -> "Transfer Duraklatıldı (Oynatmaya Hazır)"
+                                                else -> "Transfer Duraklatıldı"
+                                            }
+                                        )
                                     )
-                                )
-                                Thread.sleep(85L)
+                                }
+                                if (writerError.get()) break
+                                Thread.sleep(40L)
                             }
-                            if (pauseTailApplied && !sessionCancel.get()) {
-                                pauseTailApplied = false
+                            if (wasPaused && !sessionCancel.get()) {
+                                wasPaused = false
                                 speedSamples.clear()
-                                val contiguousNow = contiguousWatermarkBytes.get()
-                                if (writtenStripesBitSet.length() > nextContiguousStripe) {
-                                    writtenStripesBitSet.clear(nextContiguousStripe, writtenStripesBitSet.length())
+                                // DEVAM: bitset ve sayaçlara DOKUNULMAZ. Yalnızca önizleme kuyruğu geri alınır.
+                                // (v12 burada bitset.clear + totalBytesWritten sıfırlama + truncate yapıp sıra dışı geçerli
+                                //  stripe'ları yok ediyor, watermark'ı sonsuza dek takılı bırakıyordu.)
+                                if (previewApplied && mp4Meta != null) {
+                                    Mp4FastStartHelper.restoreOriginalMdatForResume(fc, previewWatermarkBytes, mp4Meta)
                                 }
-                                totalBytesWrittenAtomic.set(contiguousNow)
-                                if (mp4Meta != null) {
-                                    Mp4FastStartHelper.restoreOriginalMdatForResume(
-                                        fc,
-                                        contiguousNow,
-                                        mp4Meta
-                                    )
-                                }
+                                previewApplied = false
                             }
+                            if (writerError.get()) break
                             if (sessionCancel.get()) break
 
-                            // Priority 1: Write nextContiguousStripe immediately if available (100% Sequential I/O)
+                            // Priority 1: Write nextContiguousStripe immediately if available
                             var targetStripeIdx = nextContiguousStripe
                             var readyBuf = completedStripes.remove(targetStripeIdx)
 
                             // Priority 2 (Anti-HoL-Stall): If nextContiguousStripe is still in flight on one socket
-                            // while other sockets have delivered >= OUT_OF_ORDER_FLUSH_THRESHOLD stripes (or readers finished),
-                            // write the lowest available stripe immediately so freeBuffers NEVER runs dry!
-                            if (readyBuf == null && (completedStripes.size >= OUT_OF_ORDER_FLUSH_THRESHOLD || activeReaders.get() == 0)) {
+                            // while other sockets have delivered >= 4 stripes (or readers finished), write the
+                            // lowest available stripe immediately so freeBuffers NEVER runs dry and sockets NEVER stall!
+                            if (readyBuf == null && (completedStripes.size >= 4 || activeReaders.get() == 0)) {
                                 val firstEntry = completedStripes.pollFirstEntry()
                                 if (firstEntry != null) {
                                     targetStripeIdx = firstEntry.key
@@ -997,40 +1064,24 @@ class ZeroCopyTransferEngine(
                                 if (activeReaders.get() == 0 && completedStripes.isEmpty()) {
                                     break
                                 }
-                                // CRITICAL FIX over v12: Wait on reorderLock whenever readyBuf == null
-                                // (even if completedStripes has 1..11 out-of-order stripes), eliminating the
-                                // 100% CPU busy-spin while waiting 0.5-2ms for nextContiguousStripe!
+                                val idleStartNs = System.nanoTime()
                                 synchronized(reorderLock) {
-                                    if (!completedStripes.containsKey(nextContiguousStripe) &&
-                                        completedStripes.size < OUT_OF_ORDER_FLUSH_THRESHOLD &&
-                                        activeReaders.get() > 0 &&
-                                        !sessionCancel.get()
-                                    ) {
-                                        reorderLock.wait(2L)
+                                    if (completedStripes.isEmpty() && activeReaders.get() > 0 && !sessionCancel.get()) {
+                                        reorderLock.wait(12L)
                                     }
                                 }
+                                diagWriterIdleNs.addAndGet(System.nanoTime() - idleStartNs)
                                 continue
                             }
 
-                            val expectedStripeBytes = (expectedFileSize - (targetStripeIdx.toLong() * STRIPE_BYTES.toLong()))
-                                .coerceAtMost(STRIPE_BYTES.toLong()).toInt()
-                            val bufLen = readyBuf.remaining()
-                            val stripeOffset = targetStripeIdx.toLong() * STRIPE_BYTES.toLong()
-                            val written = writeBufferAtOffsetSingleThread(rawFd, fc, readyBuf, stripeOffset)
-                            totalBytesWrittenAtomic.addAndGet(written)
-                            readyBuf.clear()
-                            freeBuffers.offer(readyBuf)
-
-                            if (written == expectedStripeBytes.toLong() && bufLen == expectedStripeBytes) {
-                                writtenStripesBitSet.set(targetStripeIdx)
-                                if (targetStripeIdx == nextContiguousStripe) {
-                                    nextContiguousStripe = writtenStripesBitSet.nextClearBit(nextContiguousStripe + 1)
-                                    partialTailBytesInNextStripe = 0L
-                                }
-                            } else if (targetStripeIdx == nextContiguousStripe && written > partialTailBytesInNextStripe) {
-                                partialTailBytesInNextStripe = written
+                            try {
+                                commitStripe(targetStripeIdx, readyBuf)
+                            } catch (t: Throwable) {
+                                receiveFailure = t
+                                writerError.set(true)
+                                break
                             }
-                            val contiguousNow = ((nextContiguousStripe.toLong() * STRIPE_BYTES.toLong()) + partialTailBytesInNextStripe)
+                            val contiguousNow = (nextContiguousStripe.toLong() * STRIPE_BYTES.toLong())
                                 .coerceAtMost(expectedFileSize)
                             contiguousWatermarkBytes.set(contiguousNow)
 
@@ -1070,52 +1121,56 @@ class ZeroCopyTransferEngine(
                             }
                         }
 
-                        for (rt in readerThreads) {
-                            try {
-                                rt.join(250L)
-                            } catch (_: Throwable) {
-                            }
-                        }
-
-                        // Drain any remaining contiguous stripes (including partial tail stripe) upon completion or cancel
-                        while (nextContiguousStripe < totalStripes) {
+                        // Drain any remaining contiguous stripes already in memory upon completion or cancel
+                        while (nextContiguousStripe < totalStripes && !writerError.get()) {
                             val pending = completedStripes.remove(nextContiguousStripe) ?: break
-                            val expectedStripeBytes = (expectedFileSize - (nextContiguousStripe.toLong() * STRIPE_BYTES.toLong()))
-                                .coerceAtMost(STRIPE_BYTES.toLong()).toInt()
-                            val bufLen = pending.remaining()
-                            val stripeOffset = nextContiguousStripe.toLong() * STRIPE_BYTES.toLong()
-                            val written = writeBufferAtOffsetSingleThread(rawFd, fc, pending, stripeOffset)
-                            totalBytesWrittenAtomic.addAndGet(written)
-                            pending.clear()
-                            freeBuffers.offer(pending)
-                            if (written == expectedStripeBytes.toLong() && bufLen == expectedStripeBytes) {
-                                writtenStripesBitSet.set(nextContiguousStripe)
-                                nextContiguousStripe = writtenStripesBitSet.nextClearBit(nextContiguousStripe + 1)
-                                partialTailBytesInNextStripe = 0L
-                            } else {
-                                if (written > partialTailBytesInNextStripe) {
-                                    partialTailBytesInNextStripe = written
-                                }
+                            try {
+                                commitStripe(nextContiguousStripe, pending)
+                            } catch (t: Throwable) {
+                                receiveFailure = t
                                 break
                             }
                         }
-                        val finalContiguous = ((nextContiguousStripe.toLong() * STRIPE_BYTES.toLong()) + partialTailBytesInNextStripe)
+                        val finalContiguous = (nextContiguousStripe.toLong() * STRIPE_BYTES.toLong())
                             .coerceAtMost(expectedFileSize)
                         contiguousWatermarkBytes.set(finalContiguous)
+
+                        for (rt in readerThreads) {
+                            try {
+                                rt.join(400L)
+                            } catch (_: Throwable) {
+                            }
+                        }
                     } else {
                         val streamChan = workerChannels.firstOrNull() ?: clientChannel
+                        var singlePreviewApplied = false
                         while (contiguousWatermarkBytes.get() < expectedFileSize && !sessionCancel.get()) {
+                            var singleWasPaused = false
                             while (isPaused.get() && !sessionCancel.get()) {
-                                try {
-                                    val contiguousNow = contiguousWatermarkBytes.get()
-                                    if (mp4Meta != null && contiguousNow > 0L && contiguousNow < expectedFileSize) {
-                                        Mp4FastStartHelper.applyPartialMoovTail(fileChannel, contiguousNow, mp4Meta)
-                                    } else {
-                                        fileChannel.force(true)
+                                singleWasPaused = true
+                                // v12: önizleme kuyruğu (ve her seferinde fsync) duraklatma boyunca 90 ms'de bir YENİDEN yazılıyordu
+                                // ve devam edilirken mdat başlığı hiç geri alınmıyordu. Şimdi: duraklatmada 1 kez, devamda geri al.
+                                if (!singlePreviewApplied) {
+                                    try {
+                                        val contiguousNow = contiguousWatermarkBytes.get()
+                                        if (mp4Meta != null && contiguousNow > 0L && contiguousNow < expectedFileSize) {
+                                            Mp4FastStartHelper.applyPartialMoovTail(fileChannel, contiguousNow, mp4Meta)
+                                        }
+                                        singlePreviewApplied = true
+                                    } catch (_: Throwable) {
                                     }
-                                } catch (_: Throwable) {
                                 }
-                                Thread.sleep(85L)
+                                Thread.sleep(90L)
+                            }
+                            if (singleWasPaused && !sessionCancel.get() && singlePreviewApplied) {
+                                singlePreviewApplied = false
+                                if (mp4Meta != null) {
+                                    Mp4FastStartHelper.restoreOriginalMdatForResume(
+                                        fileChannel,
+                                        contiguousWatermarkBytes.get(),
+                                        mp4Meta
+                                    )
+                                }
                             }
                             if (sessionCancel.get()) break
 
@@ -1131,7 +1186,10 @@ class ZeroCopyTransferEngine(
 
                             singleDirectBuf.flip()
                             val offset = contiguousWatermarkBytes.get()
+                            val singleT0 = System.nanoTime()
                             val w = writeBufferAtOffsetSingleThread(rawFd, fileChannel, singleDirectBuf, offset)
+                            diagWriteNs.addAndGet(System.nanoTime() - singleT0)
+                            diagWriteBytes.addAndGet(w)
                             contiguousWatermarkBytes.addAndGet(w)
                             totalBytesWrittenAtomic.set(contiguousWatermarkBytes.get())
 
@@ -1172,26 +1230,26 @@ class ZeroCopyTransferEngine(
                             }
                         }
                     }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    if (receiveFailure == null) receiveFailure = t
                 } finally {
                     val contiguousBytes = contiguousWatermarkBytes.get().coerceAtMost(expectedFileSize)
-                    var totalBytesReceived = if (totalBytesWrittenAtomic.get() >= expectedFileSize) {
+                    val totalBytesReceived = if (totalBytesWrittenAtomic.get() >= expectedFileSize) {
                         expectedFileSize
                     } else {
                         contiguousBytes
                     }
                     val isPartial = totalBytesReceived in 1L until expectedFileSize
+                    var onDiskSize = totalBytesReceived
                     try {
                         if (fileChannel != null && fileChannel.isOpen) {
                             if (isPartial && mp4Meta != null) {
-                                totalBytesReceived = Mp4FastStartHelper.applyPartialMoovTail(
-                                    fileChannel,
-                                    totalBytesReceived,
-                                    mp4Meta
-                                ).coerceAtMost(expectedFileSize)
+                                onDiskSize = Mp4FastStartHelper.applyPartialMoovTail(fileChannel, totalBytesReceived, mp4Meta)
                             } else {
+                                // fsync (force) KRİTİK YOLDA DEĞİL: sayfa önbelleği uygulama kapansa bile çekirdek tarafından
+                                // yazılır; fsync yalnızca ani güç kaybına karşıdır ve büyük dosyalarda hem "Tamamlandı"
+                                // durumunu hem de göndericiye giden onayı saniyelerce geciktirir.
                                 fileChannel.truncate(totalBytesReceived)
-                                fileChannel.force(true)
                             }
                         }
                     } catch (_: Throwable) {
@@ -1205,18 +1263,39 @@ class ZeroCopyTransferEngine(
                     } catch (_: Throwable) {
                     }
 
-                    if (!sessionCancel.get() && totalBytesReceived == expectedFileSize) {
+                    // Gönderene DİSKTE KORUNAN bayt sayısı bildirilir (tamamlandıysa = beklenen boyut). Böylece kısmi/iptal
+                    // durumunda sayı iki cihazda da aynı görünür (v12: gönderici kendi soket sayacını gösteriyordu).
+                    try {
+                        dos.writeLong(totalBytesReceived)
+                        dos.flush()
+                    } catch (_: Throwable) {
+                    }
+
+                    if (totalBytesReceived == 0L && expectedFileSize > 0L) {
+                        // Hiç veri korunmadıysa 0 baytlık artık dosya bırakma.
                         try {
-                            dos.writeLong(totalBytesReceived)
-                            dos.flush()
+                            targetFile.delete()
                         } catch (_: Throwable) {
                         }
                     }
 
+                    val elapsedNsAll = (System.nanoTime() - startTimeNs).coerceAtLeast(1L)
+                    val diagLine = receiverDiagLine(
+                        elapsedNs = elapsedNsAll,
+                        writeNs = diagWriteNs.get(),
+                        writeBytes = diagWriteBytes.get(),
+                        poolWaitNs = diagPoolWaitNs.get(),
+                        idleNs = diagWriterIdleNs.get(),
+                        readers = workerChannels.size
+                    )
+                    val failureNote = describeIoFailure(receiveFailure)
+                    linkSampler.stop()
+                    val rxLinkLine = linkSampler.summary
+
                     if (totalBytesReceived > 0L) {
                         StorageHelper.notifyMediaScanner(context, targetFile)
                         val elapsedMs = (System.currentTimeMillis() - startWallMs).coerceAtLeast(1L)
-                        val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                        val elapsedSec = (elapsedNsAll / 1_000_000_000.0).coerceAtLeast(0.001)
                         val avgSpeedMbps = (totalBytesReceived / (1024.0 * 1024.0)) / elapsedSec
                         val pct = if (expectedFileSize > 0L) (totalBytesReceived * 100L) / expectedFileSize else 100L
 
@@ -1233,6 +1312,20 @@ class ZeroCopyTransferEngine(
                         historyRecords.add(0, record)
                         onHistoryAdded(record)
 
+                        val finalMessage = buildString {
+                            if (isPartial) {
+                                append("Kısmi Dosya Korundu (%$pct • ${StorageHelper.formatFileSize(totalBytesReceived)} / ${StorageHelper.formatFileSize(expectedFileSize)})")
+                                if (onDiskSize != totalBytesReceived) {
+                                    append("\nDosya boyutu: ${StorageHelper.formatFileSize(onDiskSize)} (video önizleme kuyruğu dahil)")
+                                }
+                                if (failureNote != null) append("\n$failureNote")
+                            } else {
+                                append("Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", avgSpeedMbps)} MB/s")
+                            }
+                            if (diagLine.isNotEmpty()) append("\n$diagLine")
+                            if (rxLinkLine != null) append("\n$rxLinkLine")
+                        }
+
                         onProgressUpdate(
                             TransferProgress(
                                 fileName = targetFile.name,
@@ -1247,11 +1340,25 @@ class ZeroCopyTransferEngine(
                                 transportLabel = transportLabel,
                                 isSending = false,
                                 savedFilePath = targetFile.absolutePath,
-                                message = if (isPartial) {
-                                    "Kısmi Dosya Korundu (%$pct • ${StorageHelper.formatFileSize(totalBytesReceived)})"
-                                } else {
-                                    "Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", avgSpeedMbps)} MB/s"
-                                }
+                                message = finalMessage
+                            )
+                        )
+                    } else if (expectedFileSize > 0L) {
+                        onProgressUpdate(
+                            TransferProgress(
+                                fileName = targetFile.name,
+                                fileIndex = fileIdx,
+                                totalFiles = fileCount,
+                                bytesTransferred = 0L,
+                                totalBytes = expectedFileSize,
+                                speedMbps = 0.0,
+                                etaSeconds = 0L,
+                                elapsedMillis = (System.currentTimeMillis() - startWallMs).coerceAtLeast(1L),
+                                status = TransferStatus.PARTIAL_PRESERVED,
+                                transportLabel = transportLabel,
+                                isSending = false,
+                                savedFilePath = null,
+                                message = "Kısmi dosya oluşmadı (0 B kaydedildi)" + (failureNote?.let { "\n$it" } ?: "")
                             )
                         )
                     }
@@ -1268,11 +1375,14 @@ class ZeroCopyTransferEngine(
             activeReceiverWorkerChannels.clear()
             if (sessionCancel.get()) {
                 workers.forEach { abortChannelWithRst(it) }
-                abortChannelWithRst(clientChannel)
+                // Kontrol kanalı FIN ile kapanır: az önce yazılan "korunan bayt" sayısı (8 bayt) RST ile çöpe gitmesin.
+                closeChannelGracefully(clientChannel)
             } else {
                 workers.forEach { closeChannelGracefully(it) }
                 closeChannelGracefully(clientChannel)
             }
+            if (receiverFinalizeLatch === finalizeLatch) receiverFinalizeLatch = null
+            finalizeLatch.countDown()
         }
     }
 
@@ -1308,58 +1418,6 @@ class ZeroCopyTransferEngine(
         }
     }
 
-    private fun openParallelTurboChannels(
-        targetIp: String,
-        port: Int,
-        sessionToken: Long,
-        sessionCancel: AtomicBoolean
-    ): List<SocketChannel> {
-        val opened = CopyOnWriteArrayList<SocketChannel>()
-        val threads = (0 until PARALLEL_DATA_STREAMS).map {
-            Thread {
-                for (attempt in 0 until 8) {
-                    if (sessionCancel.get()) break
-                    var candidate: SocketChannel? = null
-                    try {
-                        candidate = SocketChannel.open()
-                        candidate.configureBlocking(true)
-                        configureChannelSocketBuffers(candidate, isSender = true)
-                        CompatibilityHelper.bindSocketToOptimalInterface(
-                            context,
-                            candidate.socket(),
-                            targetIp
-                        )
-                        candidate.socket().connect(InetSocketAddress(targetIp, port), 950)
-                        val magicBuf = ByteBuffer.allocateDirect(12).order(ByteOrder.BIG_ENDIAN)
-                        magicBuf.putInt(PROTOCOL_MAGIC_TURBO_DATA)
-                        magicBuf.putLong(sessionToken)
-                        magicBuf.flip()
-                        if (writeFullyToChannel(candidate, magicBuf)) {
-                            opened.add(candidate)
-                            break
-                        } else {
-                            closeChannelGracefully(candidate)
-                        }
-                    } catch (_: Throwable) {
-                        closeChannelGracefully(candidate)
-                        try {
-                            Thread.sleep(60L)
-                        } catch (_: Throwable) {
-                            break
-                        }
-                    }
-                }
-            }.apply { start() }
-        }
-        for (t in threads) {
-            try {
-                t.join(2500L)
-            } catch (_: Throwable) {
-            }
-        }
-        return opened.toList()
-    }
-
     private fun sendItemsToSinglePeer(
         items: List<TransferItem>,
         hostIp: String,
@@ -1371,16 +1429,11 @@ class ZeroCopyTransferEngine(
         val workerChannels = mutableListOf<SocketChannel>()
         var transportLabel = resolveActiveBandLabel(initialTransportLabel)
         var activeDataTargetIp = hostIp
-        val lastKnownSentBytes = AtomicLong(0L)
-        var lastKnownFileSize = items.firstOrNull()?.sizeBytes ?: 0L
-        var lastKnownFileName = items.firstOrNull()?.name ?: "Dosya"
-
-        scope.launch {
-            try {
-                obtainSenderBufferPool()
-            } catch (_: Throwable) {
-            }
-        }
+        // 0 = bağlanma/el sıkışma, 1 = onay/müzakere, 2 = veri fazı. Hata mesajını doğru sınıflandırmak için.
+        var phase = 0
+        var currentSentCounter: AtomicLong? = null
+        var currentFileSize = 0L
+        var stopBatch = false
 
         try {
             val totalBatchBytes = items.sumOf { it.sizeBytes }
@@ -1470,6 +1523,7 @@ class ZeroCopyTransferEngine(
             }
 
             val sessionToken = dis.readLong()
+            phase = 1
 
             // 2. Phase A: Check if Receiver offered an Automatic 5 GHz Direct P2P Bridge (Receiver-GO)
             val hasReceiverP2p = dis.readBoolean()
@@ -1565,17 +1619,19 @@ class ZeroCopyTransferEngine(
 
             transportLabel = resolveActiveBandLabel(transportLabel)
 
-            // 4. Open 6 Parallel Turbo Data SocketChannels concurrently in 1 RTT!
+            // 4. Open 6 Parallel Turbo Data SocketChannels CONCURRENTLY.
+            // v12 bunları ARDIŞIK açıyordu: 6 × (bağlantı RTT'si [+ başarısızlıkta 8 deneme × 1 sn]). Wi-Fi güç tasarrufu /
+            // hotspot'ta RTT'ler büyükken bu, kurulum süresini doğrudan katlıyordu. Paralel açılışta toplam ≈ 1 RTT.
+            // Hedef, kontrol kanalının zaten ulaştığı IP ise (LAN/hotspot) uzun yeniden deneme gereksizdir.
+            val dataRetryAttempts = if (activeDataTargetIp == hostIp) 3 else 8
             workerChannels.addAll(
-                openParallelTurboChannels(activeDataTargetIp, port, sessionToken, sessionCancel)
+                openDataChannelsParallel(activeDataTargetIp, port, sessionToken, sessionCancel, dataRetryAttempts)
             )
 
             if (workerChannels.isEmpty() && activeDataTargetIp != hostIp && !sessionCancel.get()) {
                 activeDataTargetIp = hostIp
                 transportLabel = resolveActiveBandLabel(initialTransportLabel)
-                workerChannels.addAll(
-                    openParallelTurboChannels(hostIp, port, sessionToken, sessionCancel)
-                )
+                workerChannels.addAll(openDataChannelsParallel(hostIp, port, sessionToken, sessionCancel, 3))
             }
 
             activeSenderWorkerChannels.addAll(workerChannels)
@@ -1584,13 +1640,13 @@ class ZeroCopyTransferEngine(
 
             val confirmedWorkerCount = dis.readInt()
             val canUseParallelWorkers = confirmedWorkerCount > 0 && workerChannels.isNotEmpty()
+            phase = 2
 
             val fallbackDirectBuffer = ByteBuffer.allocateDirect(DIRECT_BUFFER_BYTES)
-            val senderDirectPool = obtainSenderBufferPool()
 
             // 5. Send Each File
             for ((fileIdx, item) in items.withIndex()) {
-                if (sessionCancel.get()) break
+                if (sessionCancel.get() || stopBatch) break
 
                 var primaryHandle: IndependentFileHandle? = null
 
@@ -1606,10 +1662,6 @@ class ZeroCopyTransferEngine(
                             continue
                         }
                     }
-
-                    lastKnownFileName = item.name
-                    lastKnownFileSize = actualSize
-                    lastKnownSentBytes.set(0L)
 
                     val useParallelStripes = canUseParallelWorkers &&
                         primaryHandle != null &&
@@ -1640,15 +1692,29 @@ class ZeroCopyTransferEngine(
                     dos.flush()
 
                     val totalBytesSentAtomic = AtomicLong(0L)
+                    currentSentCounter = totalBytesSentAtomic
+                    currentFileSize = actualSize
                     val startTimeNs = System.nanoTime()
                     val startWallMs = System.currentTimeMillis()
                     val lastUiUpdateMs = AtomicLong(0L)
                     val speedSamples = ConcurrentLinkedDeque<Pair<Long, Long>>()
+                    // Ölçüm sayaçları (yalnızca gözlem): darboğazın DİSK OKUMA mı AĞ mı olduğunu gösterir.
+                    val diagReadNs = AtomicLong(0L)
+                    val diagSockNs = AtomicLong(0L)
+                    var diagWorkers = 1
+                    val txLinkSampler = LinkSampler(context, activeDataTargetIp)
+                    txLinkSampler.start()
 
                     if (useParallelStripes && primaryHandle != null) {
                         val totalStripes = ((actualSize + STRIPE_BYTES - 1L) / STRIPE_BYTES.toLong()).toInt()
                         val nextStripeIdx = AtomicInteger(0)
                         val activeChannels = workerChannels.take(confirmedWorkerCount)
+                        diagWorkers = activeChannels.size.coerceAtLeast(1)
+                        // Gönderilemeyen stripe'lar (okuma hatası / ölü soket) kaybolmaz: başka worker yeniden dener.
+                        val requeue = ConcurrentLinkedQueue<Int>()
+                        val inFlightStripes = AtomicInteger(0)
+                        val readFailures = AtomicInteger(0) // ardışık başarısız okuma sayısı
+                        val fatalReadError = AtomicBoolean(false)
 
                         val workerHandles = activeChannels.mapIndexed { idx, _ ->
                             if (idx == 0) primaryHandle else (openIndependentFileHandle(item) ?: primaryHandle)
@@ -1657,16 +1723,14 @@ class ZeroCopyTransferEngine(
                         try {
                             val senderWorkers = activeChannels.mapIndexed { wIdx, wChan ->
                                 val wHandle = workerHandles[wIdx]
-                                val workerDirectBuf = senderDirectPool.getOrElse(wIdx) {
-                                    ByteBuffer.allocateDirect(STRIPE_BYTES)
-                                }
                                 Thread {
                                     try {
                                         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                                         val hdrBuf = ByteBuffer.allocateDirect(8).order(ByteOrder.BIG_ENDIAN)
-                                        val iov = arrayOf(hdrBuf, workerDirectBuf)
+                                        val workerDirectBuf = ByteBuffer.allocateDirect(STRIPE_BYTES)
+                                        val gather = arrayOf(hdrBuf, workerDirectBuf)
 
-                                        while (!sessionCancel.get()) {
+                                        while (!sessionCancel.get() && !fatalReadError.get()) {
                                             while (isPaused.get() && !sessionCancel.get()) {
                                                 if (wIdx == 0) {
                                                     onProgressUpdate(
@@ -1686,55 +1750,92 @@ class ZeroCopyTransferEngine(
                                                         )
                                                     )
                                                 }
-                                                Thread.sleep(85L)
+                                                Thread.sleep(90L)
                                             }
                                             if (sessionCancel.get()) break
 
-                                            val sIdx = nextStripeIdx.getAndIncrement()
-                                            if (sIdx >= totalStripes) {
-                                                hdrBuf.clear()
-                                                hdrBuf.putInt(-1)
-                                                hdrBuf.putInt(0)
-                                                hdrBuf.flip()
-                                                writeFullyToChannel(wChan, hdrBuf)
-                                                break
+                                            // İş seçimi: önce yeniden kuyruğa alınanlar, sonra yeni stripe (iş-çalma, bariyer YOK).
+                                            // inFlight, iş aranmadan ÖNCE artırılır: böylece "iş kalmadı" kararı verilirken başka bir
+                                            // worker'ın yeniden kuyruğa alacağı stripe gözden kaçmaz.
+                                            inFlightStripes.incrementAndGet()
+                                            var sIdx = requeue.poll() ?: -1
+                                            if (sIdx < 0) {
+                                                val n = nextStripeIdx.getAndIncrement()
+                                                if (n < totalStripes) sIdx = n else nextStripeIdx.set(totalStripes)
+                                            }
+                                            if (sIdx < 0) {
+                                                inFlightStripes.decrementAndGet()
+                                                if (inFlightStripes.get() == 0 && requeue.isEmpty()) {
+                                                    hdrBuf.clear()
+                                                    hdrBuf.putInt(-1)
+                                                    hdrBuf.putInt(0)
+                                                    hdrBuf.flip()
+                                                    writeFullyToChannel(wChan, hdrBuf)
+                                                    break
+                                                }
+                                                Thread.sleep(2L)
+                                                continue
                                             }
 
-                                            val stripeOffset = sIdx.toLong() * STRIPE_BYTES.toLong()
-                                            val stripeLen = (actualSize - stripeOffset)
-                                                .coerceAtMost(STRIPE_BYTES.toLong()).toInt()
+                                            var stripeSent = false
+                                            var socketDead = false
+                                            try {
+                                                val stripeOffset = sIdx.toLong() * STRIPE_BYTES.toLong()
+                                                val stripeLen = (actualSize - stripeOffset)
+                                                    .coerceAtMost(STRIPE_BYTES.toLong()).toInt()
 
-                                            // 1. Page-aligned (position = 0) lockless Os.pread FIRST
-                                            workerDirectBuf.clear()
-                                            workerDirectBuf.limit(stripeLen)
-                                            val readBytes = readBufferAtOffsetLockless(
-                                                fd = wHandle.fd,
-                                                fc = wHandle.channel,
-                                                buf = workerDirectBuf,
-                                                offset = stripeOffset
-                                            )
-                                            if (readBytes < stripeLen) break
-                                            workerDirectBuf.flip()
-
-                                            // 2. Coalesced writev(hdrBuf, workerDirectBuf) in a single kernel call!
-                                            hdrBuf.clear()
-                                            hdrBuf.putInt(sIdx)
-                                            hdrBuf.putInt(stripeLen)
-                                            hdrBuf.flip()
-
-                                            if (!writeHeaderAndPayloadGather(
-                                                    wChan,
-                                                    hdrBuf,
-                                                    workerDirectBuf,
-                                                    iov,
-                                                    totalBytesSentAtomic,
-                                                    sessionCancel
+                                                // 1) ÖNCE OKU (sayfa-hizalı 1 MB ofset, tampon konumu 0 = v12 ile aynı hizalama).
+                                                //    v12 başlığı okumadan ÖNCE gönderiyordu: okuma başarısız olursa alıcı hiç gelmeyecek
+                                                //    veriyi bekler, stripe kalıcı kaybolur ve alıcıda kalıcı bir delik oluşurdu.
+                                                workerDirectBuf.clear()
+                                                workerDirectBuf.limit(stripeLen)
+                                                val readT0 = System.nanoTime()
+                                                val readBytes = readBufferAtOffsetLockless(
+                                                    fd = wHandle.fd,
+                                                    fc = wHandle.channel,
+                                                    buf = workerDirectBuf,
+                                                    offset = stripeOffset
                                                 )
-                                            ) {
-                                                lastKnownSentBytes.set(totalBytesSentAtomic.get().coerceAtMost(actualSize))
-                                                break
+                                                diagReadNs.addAndGet(System.nanoTime() - readT0)
+                                                if (readBytes < stripeLen) {
+                                                    // ARDIŞIK 8 başarısız okuma = kalıcı hata (dosya silindi / izin kalktı) -> oturumu bitir.
+                                                    // Seyrek geçici hatalar yalnızca stripe'ı yeniden kuyruğa alır; aktarımı öldürmez.
+                                                    if (readFailures.incrementAndGet() >= 8) fatalReadError.set(true)
+                                                    Thread.sleep(20L)
+                                                    continue
+                                                }
+                                                readFailures.set(0)
+                                                workerDirectBuf.flip()
+
+                                                // 2) Başlık + veri TEK gathering write (writev): ayrı 8 baytlık TCP segmenti ve ek
+                                                //    syscall yok. Veri tamponu hâlâ konum 0'da (hizasız Os.pread DEĞİL).
+                                                hdrBuf.clear()
+                                                hdrBuf.putInt(sIdx)
+                                                hdrBuf.putInt(stripeLen)
+                                                hdrBuf.flip()
+                                                val sockT0 = System.nanoTime()
+                                                while ((hdrBuf.hasRemaining() || workerDirectBuf.hasRemaining()) && !sessionCancel.get()) {
+                                                    val w = wChan.write(gather)
+                                                    if (w < 0L) {
+                                                        socketDead = true
+                                                        break
+                                                    }
+                                                }
+                                                diagSockNs.addAndGet(System.nanoTime() - sockT0)
+                                                if (socketDead || hdrBuf.hasRemaining() || workerDirectBuf.hasRemaining()) {
+                                                    socketDead = true
+                                                } else {
+                                                    stripeSent = true
+                                                    totalBytesSentAtomic.addAndGet(stripeLen.toLong())
+                                                }
+                                            } catch (_: Throwable) {
+                                                socketDead = true
+                                            } finally {
+                                                // Önce yeniden kuyruğa ekle, SONRA inFlight'ı azalt (sıra, bitiş kararı için kritik).
+                                                if (!stripeSent) requeue.add(sIdx)
+                                                inFlightStripes.decrementAndGet()
                                             }
-                                            lastKnownSentBytes.set(totalBytesSentAtomic.get().coerceAtMost(actualSize))
+                                            if (socketDead) break
 
                                             val nowMs = System.currentTimeMillis()
                                             val prevUi = lastUiUpdateMs.get()
@@ -1798,16 +1899,12 @@ class ZeroCopyTransferEngine(
                         if (item.inlineTextBytes != null) {
                             val buf = ByteBuffer.wrap(item.inlineTextBytes)
                             while (buf.hasRemaining() && !sessionCancel.get()) {
-                                val w = streamChan.write(buf).toLong()
-                                if (w > 0L) {
-                                    val s = totalBytesSentAtomic.addAndGet(w)
-                                    lastKnownSentBytes.set(s)
-                                }
+                                totalBytesSentAtomic.addAndGet(streamChan.write(buf).toLong())
                             }
                         } else if (primaryHandle != null) {
                             while (totalBytesSentAtomic.get() < actualSize && !sessionCancel.get()) {
                                 while (isPaused.get() && !sessionCancel.get()) {
-                                    Thread.sleep(85L)
+                                    Thread.sleep(90L)
                                 }
                                 if (sessionCancel.get()) break
 
@@ -1828,32 +1925,49 @@ class ZeroCopyTransferEngine(
                                 while (fallbackDirectBuffer.hasRemaining() && !sessionCancel.get()) {
                                     val written = streamChan.write(fallbackDirectBuffer)
                                     if (written <= 0) break
-                                    val s = totalBytesSentAtomic.addAndGet(written.toLong())
-                                    lastKnownSentBytes.set(s.coerceAtMost(actualSize))
+                                    totalBytesSentAtomic.addAndGet(written.toLong())
                                 }
                             }
                         }
                     }
 
-                    var bytesSent = totalBytesSentAtomic.get().coerceAtMost(actualSize)
-                    lastKnownSentBytes.set(bytesSent)
-                    if (!sessionCancel.get() && bytesSent == actualSize) {
-                        dos.flush()
-                        try {
+                    val localBytesSent = totalBytesSentAtomic.get().coerceAtMost(actualSize)
+                    var bytesSent = localBytesSent
+                    var receiverConfirmed = false
+                    val locallyCancelled = sessionCancel.get()
+                    try {
+                        if (!locallyCancelled && localBytesSent == actualSize) {
+                            dos.flush()
                             controlChannel.socket().soTimeout = 30_000
-                            val confirmedByReceiver = dis.readLong()
-                            if (confirmedByReceiver > 0L) {
-                                bytesSent = confirmedByReceiver
-                            }
-                        } catch (_: Throwable) {
+                        } else {
+                            // Kısmi sonuç (iptal / kopma): alıcının DİSKTE KORUDUĞU bayt sayısını kısa süre bekle. Alıcı bu
+                            // sayıyı her durumda gönderir; böylece iki cihaz AYNI kısmi boyutu gösterir. (v12: gönderici kendi
+                            // soket sayacını — çekirdek tamponundaki ~100 MB dahil — "gönderildi" diye gösteriyordu.)
+                            controlChannel.socket().soTimeout = 2500
                         }
+                        val reported = dis.readLong()
+                        if (reported >= 0L) {
+                            bytesSent = reported.coerceAtMost(actualSize)
+                            receiverConfirmed = true
+                        }
+                    } catch (_: Throwable) {
                     }
 
                     val elapsedMs = (System.currentTimeMillis() - startWallMs).coerceAtLeast(1L)
-                    val totalElapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                    val totalElapsedNs = (System.nanoTime() - startTimeNs).coerceAtLeast(1L)
+                    val totalElapsedSec = (totalElapsedNs / 1_000_000_000.0).coerceAtLeast(0.001)
                     val finalSpeedMbps = (bytesSent / (1024.0 * 1024.0)) / totalElapsedSec
                     val isPartial = bytesSent < actualSize
                     val pct = if (actualSize > 0L) (bytesSent * 100L) / actualSize else 100L
+                    val diagLine = senderDiagLine(
+                        elapsedNs = totalElapsedNs,
+                        readNs = diagReadNs.get(),
+                        sockNs = diagSockNs.get(),
+                        workers = diagWorkers,
+                        bytes = localBytesSent
+                    )
+                    txLinkSampler.stop()
+                    val txLinkLine = txLinkSampler.summary
 
                     onProgressUpdate(
                         TransferProgress(
@@ -1868,52 +1982,89 @@ class ZeroCopyTransferEngine(
                             status = if (isPartial) TransferStatus.PARTIAL_PRESERVED else TransferStatus.COMPLETED,
                             transportLabel = transportLabel,
                             isSending = true,
-                            message = if (isPartial) {
-                                "Durduruldu (%$pct • ${StorageHelper.formatFileSize(bytesSent)} gönderildi)"
-                            } else {
-                                "Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", finalSpeedMbps)} MB/s"
+                            message = buildString {
+                                if (isPartial) {
+                                    if (receiverConfirmed) {
+                                        append("Durduruldu • Alıcıda korunan: ${StorageHelper.formatFileSize(bytesSent)} / ${StorageHelper.formatFileSize(actualSize)} (%$pct)")
+                                    } else {
+                                        append("Durduruldu • Ağa verilen: ${StorageHelper.formatFileSize(localBytesSent)} / ${StorageHelper.formatFileSize(actualSize)}")
+                                        append("\nAlıcıdaki kesin kısmi dosya boyutu alıcı cihazda görünür.")
+                                    }
+                                } else {
+                                    append("Tamamlandı • Süre: ${formatDurationSec(elapsedMs)} • Ort. Hız: ${String.format("%.1f", finalSpeedMbps)} MB/s")
+                                }
+                                if (diagLine.isNotEmpty()) append("\n$diagLine")
+                                if (txLinkLine != null) append("\n$txLinkLine")
                             }
                         )
                     )
+                    // Alıcı bu dosyayı kısmi bıraktıysa (iptal/kopma) toplu gönderimde sonraki dosyalara geçilmez:
+                    // v12'de bu durumda ölü kanala yazılıp yanıltıcı bir "ulaşılamadı" hatası üretiliyordu.
+                    if (isPartial) stopBatch = true
                 } finally {
                     primaryHandle?.closeAll()
                 }
             }
         } catch (t: Throwable) {
+            val firstSize = items.firstOrNull()?.sizeBytes ?: 0L
+            val reportTotal = if (currentFileSize > 0L) currentFileSize else firstSize
+            val sentSoFar = (currentSentCounter?.get() ?: 0L).coerceAtMost(reportTotal)
+            val reportName = items.firstOrNull()?.name ?: "Dosya"
             if (sessionCancel.get()) {
-                val partialSent = lastKnownSentBytes.get().coerceAtMost(lastKnownFileSize)
-                val pct = if (lastKnownFileSize > 0L) (partialSent * 100L) / lastKnownFileSize else 0L
+                // v12: her iptalde "Kısmi dosya korundu" + 0 bayt gösteriliyordu (veri fazı başlamamış olsa bile).
                 onProgressUpdate(
                     TransferProgress(
-                        fileName = lastKnownFileName,
+                        fileName = reportName,
                         fileIndex = 0,
                         totalFiles = items.size,
-                        bytesTransferred = partialSent,
-                        totalBytes = lastKnownFileSize,
+                        bytesTransferred = if (phase >= 2) sentSoFar else 0L,
+                        totalBytes = reportTotal,
                         speedMbps = 0.0,
                         etaSeconds = 0L,
                         elapsedMillis = 0L,
                         status = TransferStatus.PARTIAL_PRESERVED,
                         transportLabel = transportLabel,
                         isSending = true,
-                        message = "Durduruldu (%$pct • ${StorageHelper.formatFileSize(partialSent)} gönderildi)"
+                        message = if (phase >= 2) {
+                            "Durduruldu • Ağa verilen: ${StorageHelper.formatFileSize(sentSoFar)}\nAlıcıdaki kesin kısmi dosya boyutu alıcı cihazda görünür."
+                        } else {
+                            "Aktarım başlamadan iptal edildi (kaydedilen veri yok)."
+                        }
+                    )
+                )
+            } else if (phase >= 2) {
+                // Aktarım ORTASINDA kopma bir "bağlantı kurulamadı" hatası DEĞİLDİR: alıcıdaki kısmi dosya korunur.
+                onProgressUpdate(
+                    TransferProgress(
+                        fileName = reportName,
+                        fileIndex = 0,
+                        totalFiles = items.size,
+                        bytesTransferred = sentSoFar,
+                        totalBytes = reportTotal,
+                        speedMbps = 0.0,
+                        etaSeconds = 0L,
+                        elapsedMillis = 0L,
+                        status = TransferStatus.PARTIAL_PRESERVED,
+                        transportLabel = transportLabel,
+                        isSending = true,
+                        message = "Bağlantı koptu • Ağa verilen: ${StorageHelper.formatFileSize(sentSoFar)} / ${StorageHelper.formatFileSize(reportTotal)}\nAlıcı cihazdaki kısmi dosya korunur (kesin boyut alıcıda görünür)."
                     )
                 )
             } else {
                 onProgressUpdate(
                     TransferProgress(
-                        fileName = items.firstOrNull()?.name ?: "Dosya",
+                        fileName = reportName,
                         fileIndex = 0,
                         totalFiles = items.size,
                         bytesTransferred = 0L,
-                        totalBytes = items.firstOrNull()?.sizeBytes ?: 0L,
+                        totalBytes = firstSize,
                         speedMbps = 0.0,
                         etaSeconds = 0L,
                         elapsedMillis = 0L,
                         status = TransferStatus.ERROR,
                         transportLabel = transportLabel,
                         isSending = true,
-                        message = "Hedef cihaza ($hostIp) ulaşılamadı."
+                        message = describeConnectFailure(t, hostIp)
                     )
                 )
             }
@@ -1930,6 +2081,135 @@ class ZeroCopyTransferEngine(
                 closeChannelGracefully(controlChannel)
             }
         }
+    }
+
+    /**
+     * 6 veri soketini EŞZAMANLI açar (toplam ≈ 1 RTT). Hedef zaten ulaşıldığı bilinen bir IP ise (LAN/hotspot) az sayıda
+     * deneme yeterlidir; yeni kurulmuş P2P grubunda ARP/rota henüz hazır olmayabileceği için daha çok deneme yapılır.
+     */
+    private fun openDataChannelsParallel(
+        ip: String,
+        port: Int,
+        sessionToken: Long,
+        cancel: AtomicBoolean,
+        maxAttempts: Int
+    ): List<SocketChannel> {
+        val results = arrayOfNulls<SocketChannel>(PARALLEL_DATA_STREAMS)
+        val threads = (0 until PARALLEL_DATA_STREAMS).map { i ->
+            Thread {
+                for (attempt in 0 until maxAttempts) {
+                    if (cancel.get()) break
+                    var candidate: SocketChannel? = null
+                    try {
+                        candidate = SocketChannel.open()
+                        candidate.configureBlocking(true)
+                        configureChannelSocketBuffers(candidate, isSender = true)
+                        CompatibilityHelper.bindSocketToOptimalInterface(context, candidate.socket(), ip)
+                        candidate.socket().connect(InetSocketAddress(ip, port), 1000)
+                        val turboOut = DataOutputStream(candidate.socket().getOutputStream())
+                        turboOut.writeInt(PROTOCOL_MAGIC_TURBO_DATA)
+                        turboOut.writeLong(sessionToken)
+                        turboOut.flush()
+                        results[i] = candidate
+                        break
+                    } catch (_: Throwable) {
+                        // Başarısız adayı kapat (v12 sızdırıyordu)
+                        try {
+                            candidate?.close()
+                        } catch (_: Throwable) {
+                        }
+                        try {
+                            Thread.sleep(90L)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }.apply {
+                name = "Zeph-Connect-$i"
+                start()
+            }
+        }
+        for (t in threads) {
+            try {
+                t.join()
+            } catch (_: Throwable) {
+            }
+        }
+        return results.filterNotNull()
+    }
+
+    /**
+     * Gönderici tarafı darboğaz analizi (yalnızca gözlem): her worker thread'in zamanı "disk okuma" ve "soketi yazma"
+     * arasında bölünür. Soket yazması çoğunlukla bloklanıyorsa sınır ağdır; okuma baskınsa sınır depolamadır.
+     */
+    private fun senderDiagLine(elapsedNs: Long, readNs: Long, sockNs: Long, workers: Int, bytes: Long): String {
+        if (elapsedNs <= 0L || workers <= 0 || bytes <= 0L || readNs <= 0L) return ""
+        val perThreadReadMbps = (bytes / (1024.0 * 1024.0)) / (readNs / 1_000_000_000.0)
+        val denom = elapsedNs.toDouble() * workers
+        val readBusy = (100.0 * readNs / denom).coerceIn(0.0, 100.0)
+        val sockBlocked = (100.0 * sockNs / denom).coerceIn(0.0, 100.0)
+        val verdict = when {
+            sockBlocked >= 55.0 -> "Sınır: AĞ/Wi-Fi"
+            readBusy >= 55.0 -> "Sınır: DİSK OKUMA"
+            else -> "Dengeli"
+        }
+        return String.format(
+            "Analiz (gönderici): %s • disk okuma %.0f MB/s (thread başına) • okuma %%%.0f / soket %%%.0f meşgul",
+            verdict, perThreadReadMbps, readBusy, sockBlocked
+        )
+    }
+
+    /**
+     * Veri fazı sırasında Wi-Fi bağlantısını birkaç kez örnekler (transfer bittikten sonra sürücü hız adaptasyonunu
+     * düşürmüş olabileceğinden bitişte bakmak yanıltıcıdır) ve EN YÜKSEK hızlı özeti döndürür.
+     */
+    private class LinkSampler(private val context: Context, private val peerIp: String) {
+        @Volatile
+        var summary: String? = null
+        private var bestScore = -1
+        private val thread = Thread {
+            try {
+                for (delayMs in longArrayOf(2000L, 3000L, 5000L)) {
+                    Thread.sleep(delayMs)
+                    val line = CompatibilityHelper.describeStaLinkToPeer(context, peerIp) ?: continue
+                    val score = Regex("Tx (\\d+) / Rx (\\d+)").find(line)?.let {
+                        maxOf(it.groupValues[1].toInt(), it.groupValues[2].toInt())
+                    } ?: 0
+                    if (score >= bestScore) {
+                        bestScore = score
+                        summary = line
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }.apply {
+            name = "Zeph-LinkSampler"
+            isDaemon = true
+        }
+
+        fun start() = thread.start()
+        fun stop() {
+            try {
+                thread.interrupt()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun describeConnectFailure(t: Throwable, hostIp: String): String {
+        val msg = (t.message ?: "")
+        val reason = when {
+            t is java.net.SocketTimeoutException || msg.contains("ETIMEDOUT") ->
+                "zaman aşımı (cihaz yanıt vermedi; farklı ağda olabilirsiniz ya da ağ/hotspot istemci yalıtımı var)"
+            t is java.net.NoRouteToHostException || msg.contains("ENETUNREACH") || msg.contains("EHOSTUNREACH") ->
+                "ağ yolu yok (Wi-Fi/mobil veri geçişi veya farklı ağ)"
+            t is java.net.ConnectException || msg.contains("ECONNREFUSED") ->
+                "bağlantı reddedildi (karşı cihazda uygulama açık değil)"
+            t is java.io.EOFException ->
+                "karşı cihaz bağlantıyı erken kapattı"
+            else -> t.javaClass.simpleName
+        }
+        return "Hedef cihaza ($hostIp) bağlanılamadı: $reason."
     }
 
     private fun formatDurationSec(elapsedMs: Long): String {
@@ -2056,6 +2336,13 @@ class ZeroCopyTransferEngine(
 
     fun stop() {
         cancelAndPreservePartialFile()
+        // Alıcı dosyası sonlandırılırken (truncate / video önizleme kuyruğu / ack) süreç ölürse kısmi dosya yarım kalır.
+        // "Durdur + uygulamayı kapat" akışında bu bekleme kısmi dosyanın tutarlı kalmasını sağlar. stop() ana
+        // thread'den (onDestroy) çağrıldığı için bekleme SINIRLIDIR.
+        try {
+            receiverFinalizeLatch?.await(1500L, TimeUnit.MILLISECONDS)
+        } catch (_: Throwable) {
+        }
         releaseInProcessHardwareLocks()
         activeTransferJob?.cancel()
         serverJob?.cancel()

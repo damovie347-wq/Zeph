@@ -112,7 +112,9 @@ data class TransferProgress(
     val transportLabel: String,
     val isSending: Boolean = false,
     val savedFilePath: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    // Duraklatılmış alıcıda kısmi dosya (video önizleme kuyruğu dahil) şu an AÇILABİLİR mi? Eksik parça beklenirken false.
+    val previewReady: Boolean = true
 ) {
     val progressPercent: Int
         get() = if (totalBytes > 0L) {

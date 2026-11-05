@@ -34,6 +34,7 @@ class TransferForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wifiPerfLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -96,7 +97,9 @@ class TransferForegroundService : Service() {
                     "Zeph::ZeroCopyWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(30 * 60 * 1000L)
+                    // 30 dk, çok büyük transferlerde CPU kilidini transfer ortasında düşürebiliyordu; kilit servis
+                    // durunca zaten bırakılır, 4 saat yalnızca güvenlik tavanıdır.
+                    acquire(4 * 60 * 60 * 1000L)
                 }
             }
         } catch (_: Throwable) {
@@ -108,6 +111,13 @@ class TransferForegroundService : Service() {
                 val lockMode = CompatibilityHelper.getOptimalWifiLockMode()
                 wifiLock = wm.createWifiLock(lockMode, "Zeph::ZeroCopyWifiLock").apply {
                     setReferenceCounted(false)
+                    acquire()
+                }
+            }
+            // LOW_LATENCY yalnızca ekran açık + ön plandayken aktiftir; HIGH_PERF ekran kapalıyken/arka planda da
+            // Wi-Fi güç tasarrufunu engeller (AOSP WifiManager javadoc: ikisi birlikte alınabilir).
+            if (wm != null && wifiPerfLock == null) {
+                wifiPerfLock = CompatibilityHelper.createHighPerfWifiLock(wm, "Zeph::ZeroCopyWifiPerfLock")?.apply {
                     acquire()
                 }
             }
@@ -124,6 +134,11 @@ class TransferForegroundService : Service() {
         try {
             wifiLock?.let { if (it.isHeld) it.release() }
             wifiLock = null
+        } catch (_: Throwable) {
+        }
+        try {
+            wifiPerfLock?.let { if (it.isHeld) it.release() }
+            wifiPerfLock = null
         } catch (_: Throwable) {
         }
     }

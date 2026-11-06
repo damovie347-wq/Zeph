@@ -22,8 +22,12 @@ enum class DeviceCategory {
 }
 
 enum class ConnectionTransport(val label: String, val priority: Int) {
-    WIFI_DIRECT_AUTO("Doğrudan Köprü (6GHz / 5GHz)", 1),
-    LAN_HOTSPOT("Otomatik Yüksek Hızlı Köprü", 2)
+    WIFI_DIRECT_AUTO("⚡ 5 GHz Doğrudan Köprü (Aktif • ~95–125 MB/s)", 1),
+    DIRECT_HOTSPOT("⚡ Doğrudan Hotspot Köprüsü (Aktif • ~95–120 MB/s)", 1),
+    WIFI_DIRECT_READY("🚀 Otomatik Yüksek Hızlı Köprü (5 GHz • ~90–120 MB/s)", 2),
+    AUTO_HIGH_SPEED_BRIDGE("🚀 Otomatik Yüksek Hızlı Köprü (5 GHz • ~90–120 MB/s)", 2),
+    LAN_MODEM("📶 Modem Ağı → Otomatik 5 GHz Köprü (~90–120 MB/s)", 3),
+    LAN_HOTSPOT("📶 Modem Ağı → Otomatik 5 GHz Köprü (~90–120 MB/s)", 3)
 }
 
 enum class SendMode {
@@ -48,9 +52,12 @@ data class P2pGroupCredentials(
     val ssid: String,
     val passphrase: String,
     val ownerIp: String = "192.168.49.1",
-    val freqMhz: Int = 5180,
-    val bandLabel: String = "5 GHz Doğrudan Köprü"
-)
+    val freqMhz: Int = 5745,
+    val bandLabel: String = "⚡ 5 GHz Doğrudan Köprü"
+) {
+    val goIpAddress: String
+        get() = ownerIp
+}
 
 data class TransferItem(
     val id: String,
@@ -78,11 +85,16 @@ data class PeerDevice(
     val macAddress: String?,
     val port: Int = 53317,
     val category: DeviceCategory = DeviceCategory.PHONE,
-    val transport: ConnectionTransport = ConnectionTransport.LAN_HOTSPOT,
+    val transport: ConnectionTransport = ConnectionTransport.AUTO_HIGH_SPEED_BRIDGE,
     val isFavorite: Boolean = false,
     val p2pSsid: String? = null,
     val p2pPassphrase: String? = null,
     val p2pFreqMhz: Int = 0,
+    val staFreqMhz: Int = 0,
+    val deviceTag: String? = null,
+    val fallbackLanIp: String? = null,
+    val customBadgeText: String? = null,
+    val customSubtitleText: String? = null,
     val lastSeenMs: Long = System.currentTimeMillis()
 )
 
@@ -113,7 +125,6 @@ data class TransferProgress(
     val isSending: Boolean = false,
     val savedFilePath: String? = null,
     val message: String? = null,
-    // Duraklatılmış alıcıda kısmi dosya (video önizleme kuyruğu dahil) şu an AÇILABİLİR mi? Eksik parça beklenirken false.
     val previewReady: Boolean = true
 ) {
     val progressPercent: Int

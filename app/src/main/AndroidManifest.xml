@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- Location Permissions for Wi-Fi Direct Discovery on API 21 - 32 -->
+    <!-- Location Permissions for Wi-Fi Direct & Scan on API 21 - 35 -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
@@ -24,13 +24,12 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <!-- Legacy Storage Permissions (API 21 - 32) -->
+    <!-- Direct POSIX Storage Permissions (OP_LEGACY_STORAGE for zero-FUSE-overhead sequential UFS I/O) -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+        tools:ignore="ScopedStorage" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29"
         tools:ignore="ScopedStorage" />
 
     <!-- Hardware Locks & Foreground Service Permissions -->
@@ -57,8 +56,10 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:requestLegacyExternalStorage="true"
+        android:preserveLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.FastTransfer">
+        android:theme="@style/Theme.FastTransfer"
+        tools:targetApi="r">
 
         <activity
             android:name=".MainActivity"

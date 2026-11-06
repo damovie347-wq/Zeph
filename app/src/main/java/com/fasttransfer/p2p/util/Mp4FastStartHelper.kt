@@ -118,7 +118,7 @@ object Mp4FastStartHelper {
                 ) {
                     return Mp4ContainerMetadata(
                         mdatOffset = mdatOffset,
-                        mdatHeaderSize = mdatHeaderSize,
+                        mdatHeaderSize = mdatHdrSizeOrDefault(mdatHeaderSize),
                         originalMdatHeader = originalMdatHeader,
                         tailMoovBytes = moovBytes
                     )
@@ -138,6 +138,8 @@ object Mp4FastStartHelper {
         }
         return null
     }
+
+    private fun mdatHdrSizeOrDefault(size: Int): Int = if (size == 16) 16 else 8
 
     /**
      * Patches the 'mdat' box size at [meta.mdatOffset] to match [contiguousBytesWritten] and,
@@ -189,8 +191,6 @@ object Mp4FastStartHelper {
 
             val finalPartialSize = contiguousBytesWritten + writtenMoov
             fc.truncate(finalPartialSize)
-            // v12.1: fsync (force) kaldırıldı. Oynatıcı başka bir süreçte olsa da sayfa önbelleği üzerinden tutarlı okur;
-            // fsync yalnızca ani güç kaybına karşıdır ve iptal/duraklatma sonlandırmasını saniyelerce geciktirirdi.
             finalPartialSize
         } catch (_: Throwable) {
             contiguousBytesWritten

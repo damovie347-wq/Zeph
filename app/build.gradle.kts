@@ -10,9 +10,15 @@ android {
     defaultConfig {
         applicationId = "com.fasttransfer.p2p"
         minSdk = 21
-        targetSdk = 34
-        versionCode = 6
-        versionName = "5.1.0-Master (v12.1)"
+        // targetSdk = 28 (Android 9.0):
+        // 1) Android 14/15'te minimum desteklenen targetSdk = 28 olduğu için hiçbir uyumluluk uyarısı çıkarmaz.
+        // 2) AOSP WifiServiceImpl'de isTargetSdkLessThanQOrPrivileged (< 29) kontrolünü geçerek MCC (örn. 5280 MHz DFS
+        //    modem + 5765 MHz P2P) çakışması sırasında wifiManager.disconnect() / reconnect() ile modem kanalını geçici
+        //    olarak ayırıp 5 GHz P2P köprüsüne %100 radyo zamanı (SCC) vermeyi sağlar.
+        // 3) OP_LEGACY_STORAGE ile /storage/emulated/0/Download dizininde Scoped Storage FUSE ek yükünü ortadan kaldırır.
+        targetSdk = 28
+        versionCode = 7
+        versionName = "6.0.0-Master (v14)"
 
         vectorDrawables {
             useSupportLibrary = true

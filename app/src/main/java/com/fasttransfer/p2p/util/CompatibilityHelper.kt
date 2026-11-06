@@ -11,13 +11,20 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Parcelable
 import android.provider.Settings
+import android.system.Os
+import android.system.OsConstants
 import androidx.core.content.ContextCompat
+import java.io.FileDescriptor
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 object CompatibilityHelper {
+
+    const val DEFAULT_DIRECT_PASSPHRASE: String = "zeph88889999"
 
     private val PLACEHOLDER_NAMES = setOf(
         "kind carrot",
@@ -27,6 +34,9 @@ object CompatibilityHelper {
         "android cihazı",
         "unknown"
     )
+
+    private val staSuspendedByMccGuard = AtomicBoolean(false)
+    private val suspendedNetworkId = AtomicInteger(-1)
 
     @Suppress("DEPRECATION")
     fun <T : Parcelable> getParcelableExtraCompat(intent: Intent, key: String, clazz: Class<T>): T? {
@@ -60,13 +70,13 @@ object CompatibilityHelper {
             list.add(Manifest.permission.READ_MEDIA_IMAGES)
             list.add(Manifest.permission.READ_MEDIA_VIDEO)
             list.add(Manifest.permission.READ_MEDIA_AUDIO)
+            list.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         } else {
             list.add(Manifest.permission.ACCESS_FINE_LOCATION)
             list.add(Manifest.permission.ACCESS_COARSE_LOCATION)
             list.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
+            list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         return list.toTypedArray()
     }
@@ -91,11 +101,161 @@ object CompatibilityHelper {
     }
 
     /**
-     * Karşı taraf bu cihazın Wi-Fi İSTEMCİ (STA) arayüzünün alt ağındaysa (router LAN'ı veya karşı cihazın hotspot'u),
-     * negosiye edilen Wi-Fi bağlantısını özetler. Hız tavanını yazılım değil RADYO belirler; bu satır, ölçülen MB/s'nin
-     * tavana ne kadar yakın olduğunu doğrudan gösterir. Pratik TCP verimi ≈ PHY hızı × 0,65-0,70 (Cisco/Wi-Fi sahası kuralı).
-     * P2P (192.168.49.x) ve hotspot SAHİBİ tarafta WifiInfo bu bağlantıyı yansıtmadığından null döner.
+     * MCC (Multi-Channel Concurrency) Koruması:
+     * Ev Wi-Fi modemi (wlan0) örneğin 5280 MHz (DFS Kanal 56) veya 2.4 GHz'deyken, 5 GHz Doğrudan Köprü (p2p0)
+     * 5745 / 5765 MHz'de kurulduğunda tek radyo iki farklı kanal arasında her 50 ms'de bir zaman dilimlemesi (MCC)
+     * yapar ve hız ~100 MB/s yerine 6 MB/s'ye düşer.
+     *
+     * Bu metot, P2P bağlantısı (192.168.49.x) kurulduktan hemen sonra çağrılarak çakışan modem (wlan0) bağlantısını
+     * aktarım süresince geçici olarak ayırır (böylece radyo %100 SCC modunda 5 GHz P2P kanalına kilitlenir).
+     * Aktarım bittiğinde veya iptal edildiğinde [restoreSuspendedStaWifi] otomatik olarak modeme yeniden bağlar.
      */
+    @Suppress("DEPRECATION")
+    fun suspendConflictingStaWifiForMcc(context: Context, p2pFreqMhz: Int): Boolean {
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return false
+            val info = wm.connectionInfo ?: return false
+            val staFreq = info.frequency
+            val netId = info.networkId
+            val ssid = info.ssid?.trim('"') ?: ""
+            if (ssid.startsWith("DIRECT-")) return false
+
+            val hasMccConflict = staFreq > 0 && p2pFreqMhz > 0 && kotlin.math.abs(staFreq - p2pFreqMhz) >= 20
+            if (!hasMccConflict) return false
+
+            if (netId >= 0) {
+                suspendedNetworkId.set(netId)
+                try {
+                    wm.disableNetwork(netId)
+                } catch (_: Throwable) {
+                }
+            }
+            val disconnected = try {
+                wm.disconnect()
+            } catch (_: Throwable) {
+                false
+            }
+            if (disconnected || netId >= 0) {
+                staSuspendedByMccGuard.set(true)
+                return true
+            }
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
+    /**
+     * Aktarım tamamlandığında veya iptal edildiğinde, MCC koruması tarafından geçici olarak ayrılan
+     * ev modemi (wlan0) bağlantısını otomatik olarak geri yükler.
+     */
+    @Suppress("DEPRECATION")
+    fun restoreSuspendedStaWifi(context: Context) {
+        if (!staSuspendedByMccGuard.compareAndSet(true, false)) return
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+            val netId = suspendedNetworkId.getAndSet(-1)
+            if (netId >= 0) {
+                try {
+                    wm.enableNetwork(netId, true)
+                } catch (_: Throwable) {
+                }
+            }
+            try {
+                wm.reconnect()
+            } catch (_: Throwable) {
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Linux çekirdeği sayfa önbelleği (Page Cache) optimizasyonu:
+     * Okuyucu tarafta ardışık okuma (POSIX_FADV_SEQUENTIAL + WILLNEED) bildirimi yapar.
+     */
+    fun applySequentialReadFadvise(fd: FileDescriptor, totalBytes: Long) {
+        if (totalBytes <= 0L) return
+        try {
+            Os.posix_fadvise(fd, 0L, totalBytes, OsConstants.POSIX_FADV_SEQUENTIAL)
+            val prefetchLen = totalBytes.coerceAtMost(16L * 1024L * 1024L)
+            Os.posix_fadvise(fd, 0L, prefetchLen, OsConstants.POSIX_FADV_WILLNEED)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Alıcı tarafta ~2.0 GB'ta oluşan Linux dirty_ratio (balance_dirty_pages) tıkanmasını önler:
+     * Yazma imlecinin gerisinde kalan 32 MB'lık pencereler için POSIX_FADV_DONTNEED çağrısı yaparak
+     * çekirdeğin kirli sayfaları bloklamadan arka planda (WB_SYNC_NONE) UFS'e boşaltmasını ve temizlenen
+     * sayfaları RAM'den düşürmesini sağlar. İlk 4 MB (MP4 başlığı) önbellekte tutulur.
+     */
+    fun applySequentialWriteBehindFadvise(fd: FileDescriptor, writtenCursorBytes: Long) {
+        val windowBytes = 32L * 1024L * 1024L
+        if (writtenCursorBytes < windowBytes * 2) return
+        try {
+            val recentStart = (writtenCursorBytes - windowBytes * 2).coerceAtLeast(4L * 1024L * 1024L)
+            Os.posix_fadvise(fd, recentStart, windowBytes, OsConstants.POSIX_FADV_DONTNEED)
+            if (writtenCursorBytes >= windowBytes * 3) {
+                val olderStart = (writtenCursorBytes - windowBytes * 3).coerceAtLeast(4L * 1024L * 1024L)
+                Os.posix_fadvise(fd, olderStart, windowBytes, OsConstants.POSIX_FADV_DONTNEED)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun buildDeterministicDirectSsid(context: Context, alias: String): String {
+        val tag = getShortDeviceTag(context)
+        val normalized = alias.trim()
+            .replace('ç', 'c').replace('Ç', 'C')
+            .replace('ğ', 'g').replace('Ğ', 'G')
+            .replace('ı', 'i').replace('İ', 'I')
+            .replace('ö', 'o').replace('Ö', 'O')
+            .replace('ş', 's').replace('Ş', 'S')
+            .replace('ü', 'u').replace('Ü', 'U')
+            .replace('+', 'P')
+            .replace(' ', '_')
+            .filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '_' }
+            .take(16)
+            .ifEmpty { "Android" }
+        return "DIRECT-ZP-$tag-$normalized"
+    }
+
+    fun parseDirectZephSsid(ssid: String): Pair<String, String>? {
+        val clean = ssid.trim().trim('"')
+        if (!clean.startsWith("DIRECT-ZP-")) return null
+        val rest = clean.removePrefix("DIRECT-ZP-")
+        val dashIdx = rest.indexOf('-')
+        return if (dashIdx > 0 && dashIdx < rest.length - 1) {
+            val tag = rest.substring(0, dashIdx)
+            val rawAlias = rest.substring(dashIdx + 1).replace('_', ' ').trim()
+            tag to rawAlias.ifEmpty { "Zeph ($tag)" }
+        } else {
+            val tag = rest.take(2).ifEmpty { "01" }
+            tag to "Zeph ($tag)"
+        }
+    }
+
+    fun isNonPeerApplianceName(rawName: String, primaryDeviceType: String? = null): Boolean {
+        val lower = rawName.trim().lowercase()
+        if (lower.startsWith("[lg]") ||
+            lower.contains("webos tv") ||
+            lower.startsWith("[tv]") ||
+            lower.startsWith("[samsung] tv") ||
+            lower.contains("bravia") ||
+            lower.contains("chromecast") ||
+            lower.contains("firetv") ||
+            lower.contains("roku") ||
+            lower.contains("printer") ||
+            lower.contains("direct-roku")
+        ) {
+            return true
+        }
+        if (!primaryDeviceType.isNullOrBlank()) {
+            val cat = primaryDeviceType.substringBefore('-').toIntOrNull()
+            if (cat == 3 || cat == 7) return true
+        }
+        return false
+    }
+
     @Suppress("DEPRECATION")
     fun describeStaLinkToPeer(context: Context, peerIp: String): String? {
         try {
@@ -149,12 +309,6 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * WIFI_MODE_FULL_LOW_LATENCY kilidi YALNIZCA ekran açıkken VE uygulama ön plandayken aktiftir
-     * (AOSP WifiManager javadoc). Ekran kilitlenince / başka uygulamaya geçilince Wi-Fi güç tasarrufuna girip
-     * gecikme sıçramaları ve hız düşüşü yaratabilir. WIFI_MODE_FULL_HIGH_PERF ise ekran kapalıyken ve arka planda
-     * da aktiftir; javadoc iki kilidin birlikte alınmasını açıkça tarif eder. API 34'te "deprecated" olsa da çalışır.
-     */
     @Suppress("DEPRECATION")
     fun createHighPerfWifiLock(wifiManager: WifiManager, tag: String): WifiManager.WifiLock? {
         return try {
@@ -166,12 +320,6 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * Computes a deterministic hardware & HAL capability score so that when two devices negotiate
-     * an automatic 5 GHz / 6 GHz Direct Bridge, the device with the newer Wi-Fi HAL / 80-160MHz
-     * Group Owner support (e.g., Galaxy Tab S9 or Redmi Note 13 Pro+ 5G on Android 14 vs Galaxy S10+
-     * on Android 12) is elected to create the Autonomous Group Owner first!
-     */
     fun getDeviceGoCapabilityScore(context: Context): Int {
         var score = Build.VERSION.SDK_INT
         try {
@@ -187,15 +335,11 @@ object CompatibilityHelper {
         } catch (_: Throwable) {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            score += 100
+            score += 150
         }
         return score
     }
 
-    /**
-     * Reads the active Wi-Fi connection frequency in MHz (e.g. 5745, 5765, 5180) so even when
-     * connected via Hotspot or an existing P2P link, the exact MHz frequency is known.
-     */
     @Suppress("DEPRECATION")
     fun getActiveWifiFrequencyMhz(context: Context): Int {
         try {
@@ -205,6 +349,10 @@ object CompatibilityHelper {
         } catch (_: Throwable) {
         }
         return 0
+    }
+
+    fun isNonDfs5GhzP2pChannel(freqMhz: Int): Boolean {
+        return freqMhz in 5180..5240 || freqMhz in 5745..5825
     }
 
     fun isPlaceholderDeviceName(name: String?): Boolean {
@@ -342,9 +490,6 @@ object CompatibilityHelper {
         return false
     }
 
-    // ------------------------------------------------------------------------------------------
-    // IPv4 yardımcıları: alt ağ eşleştirme. DNS çözümlemesi YAPMAZ (yalnızca sayısal IP ayrıştırır).
-    // ------------------------------------------------------------------------------------------
     private fun ipv4ToInt(addr: java.net.InetAddress?): Int? {
         val b = (addr as? Inet4Address)?.address ?: return null
         if (b.size != 4) return null
@@ -377,14 +522,6 @@ object CompatibilityHelper {
             lowerName.startsWith("lo") || lowerName.startsWith("v4-") || lowerName.startsWith("clat")
     }
 
-    /**
-     * Karşı taraf, cihazdaki HERHANGİ bir (hücresel/VPN olmayan) ağın varsayılan geçidi mi?
-     * Öyleyse bu cihaz, karşı tarafın hotspot'una / P2P grubuna istemci olarak bağlıdır => bağlantı zaten doğrudandır.
-     *
-     * v12 yalnızca cm.activeNetwork'e bakıyordu. Mobil veri açıkken Wi-Fi hotspot'u "internetsiz" sayılıp
-     * aktif ağ hücresele geçtiğinden bu kontrol sessizce başarısız oluyor ve gereksiz Wi-Fi Direct yükseltme
-     * müzakeresi (~15 sn) başlıyordu.
-     */
     @Suppress("DEPRECATION")
     private fun isRemoteGatewayOfAnyWifiNetwork(context: Context, remote: Int): Boolean {
         try {
@@ -408,14 +545,6 @@ object CompatibilityHelper {
         return false
     }
 
-    /**
-     * Karşı taraf, bu cihazın yerel bir AP / tethering / P2P arayüzünün alt ağında mı?
-     * Öyleyse bu cihaz hotspot (veya P2P grup sahibi) tarafıdır => bağlantı zaten doğrudandır.
-     *
-     * Arayüz ADINA bağımlı değildir: tethering arayüzleri ConnectivityManager'da "ağ" olarak kayıtlı olmaz,
-     * normal Wi-Fi istemci arayüzü (router'a bağlı wlan0) ise kayıtlıdır. Bu ayrım, cihaz üreticisinin
-     * arayüz adlandırmasından (ap0, swlan0, wlan1, wlan0...) bağımsız çalışır.
-     */
     @Suppress("DEPRECATION")
     private fun isRemoteOnLocalTetherInterface(context: Context, remote: Int): Boolean {
         try {
@@ -458,13 +587,9 @@ object CompatibilityHelper {
         if (remoteIp.startsWith("192.168.49.")) return true
         val remote = parseIpv4Literal(remoteIp)
 
-        // (A) Ben hotspot/P2P istemcisiyim: karşı taraf bir ağın geçidi.
         if (remote != null && isRemoteGatewayOfAnyWifiNetwork(context, remote)) return true
-
-        // (B) Ben hotspot/P2P sahibiyim: karşı taraf yerel tethering arayüzümün alt ağında.
         if (remote != null && isRemoteOnLocalTetherInterface(context, remote)) return true
 
-        // (C) Eski sezgiler (geri uyumluluk için korunur)
         if (remoteIp.startsWith("192.168.43.")) return true
         if (isMobileHotspotActive(context)) return true
 
@@ -494,6 +619,10 @@ object CompatibilityHelper {
     }
 
     fun getLocalP2pInterfaceIp(): String? {
+        return getLocalP2pInetAddress()?.hostAddress
+    }
+
+    fun getLocalP2pInetAddress(): Inet4Address? {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
             for (nif in interfaces) {
@@ -502,7 +631,7 @@ object CompatibilityHelper {
                     if (addr is Inet4Address && !addr.isLoopbackAddress) {
                         val ip = addr.hostAddress ?: continue
                         if (ip.startsWith("192.168.49.")) {
-                            return ip
+                            return addr
                         }
                     }
                 }
@@ -535,16 +664,9 @@ object CompatibilityHelper {
         return result
     }
 
-    /**
-     * Soketi hedefe giden doğru arayüze/ağa bağlar. Wi-Fi internetsizse Android varsayılan ağı hücresele
-     * çevirir; bağlanmamış bir soket yerel IP'ye hücresel üzerinden gitmeye çalışıp zaman aşımına uğrar.
-     * v12 eşleştirmeyi "/24 string öneki" ile yapıyordu (/23, /16 ağlarda hedef farklı 3. oktette ise kaçırıyordu);
-     * burada gerçek önek uzunluğuna (LinkAddress.prefixLength / InterfaceAddress.networkPrefixLength) göre eşleşir.
-     */
     fun bindSocketToOptimalInterface(context: Context, socket: Socket, targetHostIp: String) {
         val target = parseIpv4Literal(targetHostIp) ?: return
 
-        // 1) Wi-Fi Direct grubu (192.168.49.x): yerel p2p adresine bağla (v12 davranışı korunur)
         if (targetHostIp.startsWith("192.168.49.")) {
             try {
                 val interfaces = NetworkInterface.getNetworkInterfaces()
@@ -566,7 +688,6 @@ object CompatibilityHelper {
             }
         }
 
-        // 2) ConnectivityManager ağına bağla (hotspot İSTEMCİSİ / router Wi-Fi'si; hücresel/VPN hariç)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -597,7 +718,6 @@ object CompatibilityHelper {
             }
         }
 
-        // 3) Yerel arayüz adresine bağla (hotspot SAHİBİ: tethering arayüzü ConnectivityManager'da ağ değildir)
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return
             for (nif in interfaces) {

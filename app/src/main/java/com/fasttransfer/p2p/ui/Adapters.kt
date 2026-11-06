@@ -34,8 +34,11 @@ class NearbyDeviceAdapter(
     override fun onBindViewHolder(holder: PeerViewHolder, position: Int) {
         val peer = items[position]
         holder.tvName.text = peer.alias
-        holder.tvBandTag.text = peer.transport.label
-        holder.tvAddress.text = peer.ipAddress ?: peer.macAddress ?: "Doğrudan Kanal"
+        holder.tvBandTag.text = peer.customBadgeText?.takeIf { it.isNotBlank() } ?: peer.transport.label
+        holder.tvAddress.text = peer.customSubtitleText?.takeIf { it.isNotBlank() }
+            ?: peer.ipAddress
+            ?: peer.macAddress
+            ?: "Doğrudan 5 GHz Kanalı"
 
         val iconRes = when (peer.category) {
             DeviceCategory.PHONE -> R.drawable.ic_device_phone

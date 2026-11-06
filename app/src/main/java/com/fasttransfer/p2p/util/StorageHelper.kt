@@ -2,6 +2,7 @@ package com.fasttransfer.p2p.util
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -10,6 +11,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
@@ -21,12 +23,6 @@ import java.util.UUID
 
 object StorageHelper {
 
-    /**
-     * ZERO-CACHE SHARE SHEET & PICKER URI RESOLVER:
-     * Never copies any URI to cacheDir or filesDir!
-     * Reads only metadata (name & size) in <1ms and keeps the original content:// or file:// URI
-     * so ZeroCopyTransferEngine streams directly from the underlying FileDescriptor to the NIC.
-     */
     fun extractTransferItemsFromIntent(context: Context, intent: Intent?): List<TransferItem> {
         if (intent == null) return emptyList()
         val action = intent.action ?: return emptyList()
@@ -212,7 +208,6 @@ object StorageHelper {
             val apkFile = File(sourcePath)
             if (!apkFile.exists() || !apkFile.canRead()) continue
 
-            // Include user-installed apps and updated system apps (just like LocalSend APK picker)
             val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             if (isSystem && !isUpdatedSystem && pm.getLaunchIntentForPackage(pkg.packageName) == null) {
@@ -245,11 +240,6 @@ object StorageHelper {
         return apkItems.sortedBy { it.appName.lowercase() }
     }
 
-    /**
-     * DIRECT PUBLIC DOWNLOADS TARGET:
-     * Never uses .tmp or .part extensions! Writes directly with the real filename and real extension
-     * into Environment.DIRECTORY_DOWNLOADS so the user can immediately open even a %5 partial file.
-     */
     @Suppress("DEPRECATION")
     fun createDirectDownloadTarget(context: Context, originalFileName: String): File {
         val cleanName = sanitizeFileName(originalFileName)
@@ -283,15 +273,44 @@ object StorageHelper {
         return candidate
     }
 
+    /**
+     * Dosya tamamlandığında veya iptal edilip kısmi dosya olarak korunduğunda, Android Dosya Yöneticisi
+     * (MediaStore + MediaScanner) indeksini gerçek disk boyutuyla (file.length()) anında senkronize eder.
+     */
+    @Suppress("DEPRECATION")
     fun notifyMediaScanner(context: Context, file: File) {
+        if (!file.exists()) return
+        val actualSize = file.length()
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.SIZE, actualSize)
+                put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
+            }
+            context.contentResolver.update(
+                MediaStore.Files.getContentUri("external"),
+                values,
+                "${MediaStore.MediaColumns.DATA} = ?",
+                arrayOf(file.absolutePath)
+            )
+        } catch (_: Throwable) {
+        }
         try {
             val mime = guessMimeType(file.name)
             MediaScannerConnection.scanFile(
                 context.applicationContext,
                 arrayOf(file.absolutePath),
-                arrayOf(mime),
-                null
-            )
+                arrayOf(mime)
+            ) { _, uri ->
+                if (uri != null) {
+                    try {
+                        val values = ContentValues().apply {
+                            put(MediaStore.MediaColumns.SIZE, file.length())
+                        }
+                        context.contentResolver.update(uri, values, null, null)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
         } catch (_: Throwable) {
         }
     }

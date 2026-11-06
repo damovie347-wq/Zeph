@@ -91,8 +91,6 @@ class MainActivity : AppCompatActivity() {
     private var isAdvancedStatsExpanded: Boolean = false
     private var isTransferCurrentlyFinishedOrStopped: Boolean = false
 
-    // İptal tuşuna basıldı ama motor kısmi dosyayı henüz SONLANDIRMADI (truncate / önizleme kuyruğu / alıcı onayı).
-    // Bu sürede "Korundu" yazmak yanıltıcıdır ve kullanıcı uygulamayı erken kapatıp dosyayı yarım bırakabilir.
     private var awaitingFinalPartialStatus: Boolean = false
 
     private var skeletonAnimationJob: Job? = null
@@ -194,6 +192,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (::wifiDirectManager.isInitialized && ::lanDiscoveryManager.isInitialized) {
+            wifiDirectManager.setReceiveStandbyMode(currentTabIndex == 0)
             wifiDirectManager.syncStateAndDiscover()
             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
         }
@@ -429,6 +428,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvNavSettings.setTextColor(if (index == 2) activeLabelColor else muted)
 
         if (::wifiDirectManager.isInitialized && ::lanDiscoveryManager.isInitialized && previousTab != index) {
+            wifiDirectManager.setReceiveStandbyMode(index == 0)
             wifiDirectManager.syncStateAndDiscover()
             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
         }
@@ -532,12 +532,9 @@ class MainActivity : AppCompatActivity() {
             awaitingFinalPartialStatus = true
             binding.btnPauseResumeTransfer.visibility = View.GONE
             binding.tvCancelOrDoneLabel.text = "Kapat"
-            // v12: burada hemen "Kısmi Dosya Korundu" yazılıyordu; oysa dosya henüz sonlandırılmamıştı.
             binding.tvTransferTitle.text = "Kısmi dosya kaydediliyor…"
             binding.tvTransferEta.text = "Kesin boyut doğrulanıyor, lütfen uygulamayı kapatmayın."
             lifecycleScope.launch {
-                // Motor son durumu (kesin kısmi boyutla) bildirmezse (örn. onay/müzakere sırasında iptal) kullanıcıyı
-                // sonsuza dek "kaydediliyor"da bırakma.
                 delay(3500L)
                 if (awaitingFinalPartialStatus) {
                     awaitingFinalPartialStatus = false
@@ -569,7 +566,7 @@ class MainActivity : AppCompatActivity() {
         awaitingFinalPartialStatus = false
         binding.tvSessionMainTitle.text = if (isSending) "Dosyalar gönderiliyor" else "Dosyalar alınıyor"
         binding.tvSessionSubPath.text = if (isSending) {
-            "6-Kanallı Lockless DMA + Sıralı UFS Akışı (5 GHz / 6 GHz)"
+            "4-Kanallı Tam-Dupleks NACK + Sıralı UFS Akışı (5 GHz / 6 GHz)"
         } else {
             "Hedef klasör: /storage/emulated/0/Download"
         }
@@ -768,12 +765,15 @@ class MainActivity : AppCompatActivity() {
             onDirectConnectionReady = { groupOwnerIp, isGroupOwner, bandLabel ->
                 runOnUiThread {
                     lifecycleScope.launch(Dispatchers.IO) {
+                        if (!isGroupOwner) {
+                            transferEngine.notifyGroupOwnerClientReadyBlocking(groupOwnerIp)
+                        }
                         repeat(5) {
                             if (!isGroupOwner) {
                                 lanDiscoveryManager.sendUnicastAnnounce(groupOwnerIp)
                             }
                             lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                            delay(160L)
+                            delay(150L)
                         }
                     }
 
@@ -791,14 +791,15 @@ class MainActivity : AppCompatActivity() {
                             p2pWaitClientJob = lifecycleScope.launch(Dispatchers.IO) {
                                 var targetClientIp: String? = null
                                 for (attempt in 0 until 45) {
+                                    val fromHello = transferEngine.getLastKnownP2pClientIp()
                                     val fromLan = lanPeers.firstOrNull {
                                         it.ipAddress?.startsWith("192.168.49.") == true && it.ipAddress != "192.168.49.1"
                                     }?.ipAddress
                                     val fromArp = wifiDirectManager.findConnectedP2pClientIpFromArp()
-                                    targetClientIp = fromLan ?: fromArp
+                                    targetClientIp = fromHello ?: fromLan ?: fromArp
                                     if (!targetClientIp.isNullOrBlank()) break
                                     lanDiscoveryManager.broadcastDiscoveryBeacon(isPing = true)
-                                    delay(160L)
+                                    delay(140L)
                                 }
                                 withContext(Dispatchers.Main) {
                                     if (!targetClientIp.isNullOrBlank()) {
@@ -844,16 +845,19 @@ class MainActivity : AppCompatActivity() {
             getLocalAlias = { deviceAlias },
             getLocalDeviceModel = { lanDiscoveryManager.getLocalDeviceModelName() },
             onPrepareP2pGroup = {
-                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(3500L)
+                wifiDirectManager.createAutonomousHighSpeedGroupBlocking(timeoutMs = 3500L)
             },
             onJoinP2pGroup = { creds ->
-                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, 3400L)
+                wifiDirectManager.joinAutonomousGroupSilentlyBlocking(creds, timeoutMs = 4200L)
             },
             isHighBandUpgradeEnabled = {
                 wifiDirectManager.preferHighBand && !wifiDirectManager.shouldSkipP2pBecauseHotspotOrWifiOff()
             },
             resolveActiveBandLabel = { fallback ->
                 wifiDirectManager.resolveCurrentLinkBandLabel(fallback)
+            },
+            onP2pClientHelloReceived = { clientIp ->
+                lanDiscoveryManager.sendUnicastAnnounce(clientIp)
             },
             onIncomingConsentRequest = { req ->
                 runOnUiThread {
@@ -886,6 +890,7 @@ class MainActivity : AppCompatActivity() {
         transferEngine.startServer()
 
         wifiDirectManager.start()
+        wifiDirectManager.setReceiveStandbyMode(currentTabIndex == 0)
         lanDiscoveryManager.start()
 
         for (favIp in favoriteIps) {
@@ -944,36 +949,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * V14 UNIFIED PEER DEDUPLICATION & SPEED BADGE CLARITY:
+     * Merges LAN (`192.168.1.x`), Direct P2P (`192.168.49.x`), and Wi-Fi Direct / `DIRECT-ZP-...`
+     * entries belonging to the same `deviceTag` or normalized alias into a single clean row
+     * displaying the fastest available bridge and estimated MB/s speed.
+     */
     private fun mergeAndRenderDiscoveredPeers() {
         val combined = mutableListOf<PeerDevice>()
 
-        val sortedLan = lanPeers.sortedBy { if (it.ipAddress?.startsWith("192.168.49.") == true) 0 else 1 }
+        val sortedLan = lanPeers.sortedWith(
+            compareBy<PeerDevice> { it.transport.priority }
+                .thenByDescending { it.ipAddress?.startsWith("192.168.49.") == true }
+        )
+
         for (lan in sortedLan) {
-            val existingIdx = combined.indexOfFirst { it.alias.equals(lan.alias, ignoreCase = true) }
+            if (CompatibilityHelper.isNonPeerApplianceName(lan.alias)) continue
+            val existingIdx = combined.indexOfFirst { existing ->
+                (!existing.deviceTag.isNullOrBlank() && existing.deviceTag.equals(lan.deviceTag, ignoreCase = true)) ||
+                    existing.alias.equals(lan.alias, ignoreCase = true)
+            }
             if (existingIdx == -1) {
                 combined.add(lan)
             } else {
                 val existing = combined[existingIdx]
-                if (existing.ipAddress?.startsWith("192.168.49.") != true && lan.ipAddress?.startsWith("192.168.49.") == true) {
-                    combined[existingIdx] = lan
+                val preferNew = existing.ipAddress?.startsWith("192.168.49.") != true &&
+                    lan.ipAddress?.startsWith("192.168.49.") == true
+                if (preferNew) {
+                    combined[existingIdx] = lan.copy(
+                        fallbackLanIp = existing.ipAddress ?: lan.fallbackLanIp,
+                        macAddress = lan.macAddress ?: existing.macAddress,
+                        p2pSsid = lan.p2pSsid ?: existing.p2pSsid,
+                        p2pPassphrase = lan.p2pPassphrase ?: existing.p2pPassphrase,
+                        p2pFreqMhz = if (lan.p2pFreqMhz > 0) lan.p2pFreqMhz else existing.p2pFreqMhz
+                    )
+                } else {
+                    combined[existingIdx] = existing.copy(
+                        fallbackLanIp = existing.fallbackLanIp ?: lan.ipAddress,
+                        p2pSsid = existing.p2pSsid ?: lan.p2pSsid,
+                        p2pPassphrase = existing.p2pPassphrase ?: lan.p2pPassphrase,
+                        p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else lan.p2pFreqMhz
+                    )
                 }
             }
         }
 
         for (p2p in p2pPeers) {
-            val matchIdx = combined.indexOfFirst {
-                it.id == p2p.id || it.alias.equals(p2p.alias, ignoreCase = true)
+            if (CompatibilityHelper.isNonPeerApplianceName(p2p.alias)) continue
+            val matchIdx = combined.indexOfFirst { existing ->
+                existing.id == p2p.id ||
+                    (!existing.deviceTag.isNullOrBlank() && existing.deviceTag.equals(p2p.deviceTag, ignoreCase = true)) ||
+                    existing.alias.equals(p2p.alias, ignoreCase = true)
             }
             if (matchIdx == -1) {
                 combined.add(p2p)
             } else {
                 val existing = combined[matchIdx]
+                val bestTransport = if (existing.transport.priority <= p2p.transport.priority) {
+                    existing.transport
+                } else {
+                    p2p.transport
+                }
                 combined[matchIdx] = existing.copy(
                     macAddress = existing.macAddress ?: p2p.macAddress,
                     p2pSsid = existing.p2pSsid ?: p2p.p2pSsid,
                     p2pPassphrase = existing.p2pPassphrase ?: p2p.p2pPassphrase,
                     p2pFreqMhz = if (existing.p2pFreqMhz > 0) existing.p2pFreqMhz else p2p.p2pFreqMhz,
-                    transport = ConnectionTransport.WIFI_DIRECT_AUTO
+                    deviceTag = existing.deviceTag ?: p2p.deviceTag,
+                    transport = bestTransport,
+                    customBadgeText = existing.customBadgeText ?: p2p.customBadgeText
                 )
             }
         }
@@ -1024,36 +1068,38 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        if (!peer.ipAddress.isNullOrBlank()) {
-            transferEngine.sendItemsToPeers(
-                items = selectedTransferItems.toList(),
-                targetHostIps = listOf(peer.ipAddress to peer.port),
-                transportLabel = peer.transport.label
-            )
-            return
-        }
-
-        if (!peer.macAddress.isNullOrBlank()) {
-            pendingPeerForDirectTransfer = peer
-            binding.tvTransferTitle.text = "5 GHz / 6 GHz Doğrudan Köprü Kuruluyor..."
-            binding.tvTransferEta.text = "Karşı cihazda çıkan Wi-Fi Direct davetini onaylayın..."
-            wifiDirectManager.connectWithCascadingBandFallback(
-                macAddress = peer.macAddress,
-                peerSsid = peer.p2pSsid,
-                peerPassphrase = peer.p2pPassphrase,
-                peerFreqMhz = peer.p2pFreqMhz
-            ) { success, msg ->
+        transferEngine.sendItemsToPeerAutoBridge(
+            items = selectedTransferItems.toList(),
+            peer = peer,
+            onRequireMacFallback = { fallbackPeer ->
                 runOnUiThread {
-                    if (!success) {
-                        binding.tvTransferEta.text = msg
+                    val mac = fallbackPeer.macAddress
+                    if (!mac.isNullOrBlank()) {
+                        pendingPeerForDirectTransfer = fallbackPeer
+                        binding.tvTransferTitle.text = "5 GHz / 6 GHz Doğrudan Köprü Kuruluyor..."
+                        binding.tvTransferEta.text = "Otomatik yüksek hızlı P2P bağlantısı başlatılıyor..."
+                        wifiDirectManager.connectWithCascadingBandFallback(
+                            macAddress = mac,
+                            peerSsid = fallbackPeer.p2pSsid,
+                            peerPassphrase = fallbackPeer.p2pPassphrase,
+                            peerFreqMhz = fallbackPeer.p2pFreqMhz
+                        ) { success, msg ->
+                            runOnUiThread {
+                                if (!success) {
+                                    binding.tvTransferEta.text = msg
+                                }
+                            }
+                        }
+                    } else {
+                        binding.tvTransferTitle.text = "Bağlantı Kurulamadı"
+                        binding.tvTransferEta.text = "Hedef cihazın IP veya Wi-Fi Direct adresi bulunamadı."
                     }
                 }
             }
-        }
+        )
     }
 
     private fun renderTransferProgress(progress: TransferProgress) {
-        // İptalden sonra gelen BAYAT güncellemeler (uçuştaki TRANSFERRING/PAUSED) arayüzü geri çevirmesin.
         if (awaitingFinalPartialStatus &&
             (progress.status == TransferStatus.TRANSFERRING ||
                 progress.status == TransferStatus.PAUSED ||
@@ -1115,7 +1161,6 @@ class MainActivity : AppCompatActivity() {
                 if (!progress.message.isNullOrEmpty()) {
                     binding.tvTransferEta.text = progress.message
                 }
-                // Önizleme kuyruğu hazır olmadan "Aç" gösterilirse geçersiz/yarım bir dosya açılabilir.
                 if (progress.previewReady && !lastSavedOrPartialFilePath.isNullOrEmpty()) {
                     binding.btnOpenPartialFile.visibility = View.VISIBLE
                     binding.btnOpenPartialFile.text = "Kısmi Dosyayı Aç / Oynat"
@@ -1500,8 +1545,8 @@ class MainActivity : AppCompatActivity() {
         val records = transferEngine.historyRecords.toList()
         if (records.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle("Aktarım Geçmişi (%5 Kısmi & Tam Dosyalar)")
-                .setMessage("Henüz alınan dosya yok. Alınan tam veya %5 kısmi dosyalar doğrudan Download klasörüne kaydedilir ve buradan tek dokunuşla açılabilir.")
+                .setTitle("Aktarım Geçmişi (Kısmi & Tam Dosyalar)")
+                .setMessage("Henüz alınan dosya yok. Alınan tam veya kısmi dosyalar doğrudan Download klasörüne kaydedilir ve buradan tek dokunuşla açılabilir.")
                 .setPositiveButton("Tamam", null)
                 .show()
             return
@@ -1538,7 +1583,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Cihaz Adı: $deviceAlias")
             appendLine("• Desteklenen Bantlar: $hwBands")
             appendLine("• Aktif IP Adresleri: $ipText")
-            appendLine("• Zero-Copy Motoru: 6-Kanallı Lockless DMA + Sıralı UFS Yazıcı")
+            appendLine("• Zero-Copy Motoru: 4-Kanallı Tam-Dupleks NACK + Sıralı UFS Yazıcı (v14)")
             append("• Hedef Klasör: /storage/emulated/0/Download")
         }
 
@@ -1573,7 +1618,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("• Donanım Bant Desteği: $hwBands")
             appendLine("• Aktif Ağ Durumu: $ips")
             appendLine()
-            append("İki cihaz aynı ev Wi-Fi ağındayken veya hiçbir ağa bağlı değilken bile hedef cihaza dokunduğunuzda uygulama otomatik olarak 5 GHz / 6 GHz doğrudan P2P köprüsü kurar ve maksimum donanım hızında aktarır.")
+            append("İki cihaz aynı ev Wi-Fi ağındayken, farklı ağlardayken veya hiçbir ağa bağlı değilken bile hedef cihaza dokunduğunuzda uygulama otomatik olarak 5 GHz / 6 GHz doğrudan P2P köprüsü kurar ve MCC kanal çakışmasını engelleyerek maksimum donanım hızında aktarır.")
         }
         AlertDialog.Builder(this)
             .setTitle("Sorun Giderme")

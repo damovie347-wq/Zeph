@@ -88,14 +88,58 @@ class LanDiscoveryManager(
         }
     }
 
-    private fun classifyTransportByIp(ip: String): ConnectionTransport {
-        return if (ip.startsWith("192.168.49.") ||
+    private fun classifyTransportByIp(
+        ip: String,
+        hasP2pBridgeReady: Boolean = false
+    ): ConnectionTransport {
+        return when {
+            ip.startsWith("192.168.49.") -> ConnectionTransport.WIFI_DIRECT_AUTO
             ip.startsWith("192.168.43.") ||
-            CompatibilityHelper.isAlreadyDirectOrHotspotConnection(context, ip)
-        ) {
-            ConnectionTransport.WIFI_DIRECT_AUTO
-        } else {
-            ConnectionTransport.LAN_HOTSPOT
+                CompatibilityHelper.isAlreadyDirectOrHotspotConnection(context, ip) -> ConnectionTransport.DIRECT_HOTSPOT
+            hasP2pBridgeReady -> ConnectionTransport.WIFI_DIRECT_READY
+            else -> ConnectionTransport.LAN_MODEM
+        }
+    }
+
+    private fun buildBadgeForPeer(
+        transport: ConnectionTransport,
+        ip: String,
+        p2pFreq: Int,
+        fallbackLanIp: String?
+    ): String {
+        val freqLabel = if (p2pFreq >= 5925) "6 GHz" else "5 GHz"
+        return when (transport) {
+            ConnectionTransport.WIFI_DIRECT_AUTO ->
+                "⚡ $freqLabel Doğrudan Köprü (Aktif • ~95-125 MB/s)"
+            ConnectionTransport.DIRECT_HOTSPOT ->
+                "⚡ Doğrudan Hotspot Köprüsü (Aktif • ~95-120 MB/s)"
+            ConnectionTransport.WIFI_DIRECT_READY ->
+                "🚀 Otomatik Yüksek Hızlı Köprü ($freqLabel • ~90-120 MB/s)"
+            ConnectionTransport.LAN_MODEM ->
+                "📶 Modem Ağı → Tıklayınca Otomatik 5 GHz Köprü (~90-120 MB/s)"
+        }
+    }
+
+    private fun buildSubtitleForPeer(
+        model: String,
+        transport: ConnectionTransport,
+        ip: String,
+        fallbackLanIp: String?
+    ): String {
+        return when (transport) {
+            ConnectionTransport.WIFI_DIRECT_AUTO -> {
+                if (!fallbackLanIp.isNullOrBlank() && fallbackLanIp != ip) {
+                    "$model • Doğrudan: $ip (Modem: $fallbackLanIp)"
+                } else {
+                    "$model • Doğrudan Köprü: $ip"
+                }
+            }
+            ConnectionTransport.DIRECT_HOTSPOT ->
+                "$model • Doğrudan Hotspot: $ip"
+            ConnectionTransport.WIFI_DIRECT_READY ->
+                "$model • $ip (Otomatik 5 GHz Köprü Hazır)"
+            ConnectionTransport.LAN_MODEM ->
+                "$model • Modem Ağı: $ip (Otomatik 5 GHz Köprü Destekli)"
         }
     }
 
@@ -148,6 +192,7 @@ class LanDiscoveryManager(
                         val p2pSsid = json.optString("p2pSsid", "").takeIf { it.isNotBlank() }
                         val p2pPwd = json.optString("p2pPwd", "").takeIf { it.isNotBlank() }
                         val p2pFreq = json.optInt("p2pFreq", 0)
+                        val deviceTag = json.optString("deviceTag", "").takeIf { it.isNotBlank() }
 
                         val cleanAlias = if (!CompatibilityHelper.isPlaceholderDeviceName(rawAlias)) {
                             rawAlias
@@ -157,7 +202,9 @@ class LanDiscoveryManager(
                             "Galaxy / Android (${senderIp.substringAfterLast('.')})"
                         }
 
-                        val transport = classifyTransportByIp(senderIp)
+                        if (CompatibilityHelper.isNonPeerApplianceName(cleanAlias)) continue
+
+                        val transport = classifyTransportByIp(senderIp, hasP2pBridgeReady = !p2pSsid.isNullOrBlank())
 
                         val peer = PeerDevice(
                             id = "ip_$senderIp",
@@ -171,6 +218,9 @@ class LanDiscoveryManager(
                             p2pSsid = p2pSsid,
                             p2pPassphrase = p2pPwd,
                             p2pFreqMhz = p2pFreq,
+                            deviceTag = deviceTag,
+                            customBadgeText = buildBadgeForPeer(transport, senderIp, p2pFreq, null),
+                            customSubtitleText = buildSubtitleForPeer(model, transport, senderIp, null),
                             lastSeenMs = System.currentTimeMillis()
                         )
                         peersByIp[senderIp] = peer
@@ -212,6 +262,8 @@ class LanDiscoveryManager(
             put("model", getLocalDeviceModelName())
             put("port", transferPort)
             put("ping", isPing)
+            put("deviceTag", CompatibilityHelper.getShortDeviceTag(context))
+            put("staFreq", CompatibilityHelper.getActiveWifiFrequencyMhz(context))
             if (creds != null) {
                 put("p2pSsid", creds.ssid)
                 put("p2pPwd", creds.passphrase)
@@ -337,6 +389,8 @@ class LanDiscoveryManager(
             category = DeviceCategory.PHONE,
             transport = transport,
             isFavorite = true,
+            customBadgeText = buildBadgeForPeer(transport, cleanIp, 5745, null),
+            customSubtitleText = buildSubtitleForPeer("Android", transport, cleanIp, null),
             lastSeenMs = System.currentTimeMillis() + 3_600_000L
         )
         notifyPeersUpdated()
@@ -395,6 +449,8 @@ class LanDiscoveryManager(
                         } else {
                             "Cihaz ($hostIp)"
                         }
+                        if (CompatibilityHelper.isNonPeerApplianceName(displayAlias)) return
+                        val transport = classifyTransportByIp(hostIp)
                         peersByIp[hostIp] = PeerDevice(
                             id = "ip_$hostIp",
                             alias = displayAlias,
@@ -403,7 +459,9 @@ class LanDiscoveryManager(
                             macAddress = null,
                             port = info.port.takeIf { it > 0 } ?: transferPort,
                             category = DeviceCategory.PHONE,
-                            transport = classifyTransportByIp(hostIp),
+                            transport = transport,
+                            customBadgeText = buildBadgeForPeer(transport, hostIp, 0, null),
+                            customSubtitleText = buildSubtitleForPeer("Android", transport, hostIp, null),
                             lastSeenMs = System.currentTimeMillis()
                         )
                         notifyPeersUpdated()
@@ -442,19 +500,56 @@ class LanDiscoveryManager(
         }
     }
 
+    /**
+     * V14 UI CLARITY & DEDUPLICATION:
+     * Previously, when a peer was visible on both `192.168.49.1` (P2P Direct Bridge) and
+     * `192.168.1.92` (Home Router), `notifyPeersUpdated()` mutated their aliases to
+     * `Redmi Note 13 Pro+ 5G (#1)` and `Redmi Note 13 Pro+ 5G (#92)`, creating two duplicate
+     * truncated rows in the UI (seen at 04:08 in the Galaxy S10+ video).
+     *
+     * Now we group entries belonging to the same `deviceTag` or normalized `alias`, merge them
+     * into a SINGLE unified `PeerDevice` with the fastest transport (`192.168.49.x` or hotspot IP)
+     * as the primary `ipAddress` and the router IP saved in `fallbackLanIp`, with a crystal-clear
+     * badge and speed estimate!
+     */
     private fun notifyPeersUpdated() {
         val rawList = peersByIp.values.toList()
-        val nameCounts = rawList.groupingBy { it.alias.lowercase() }.eachCount()
-        val disambiguated = rawList.map { peer ->
-            if ((nameCounts[peer.alias.lowercase()] ?: 0) > 1 && !peer.ipAddress.isNullOrBlank()) {
-                val suffix = peer.ipAddress.substringAfterLast('.')
-                peer.copy(alias = "${peer.alias} (#$suffix)")
+        val grouped = rawList.groupBy { peer ->
+            peer.deviceTag?.takeIf { it.isNotBlank() }?.lowercase()
+                ?: peer.alias.trim().lowercase()
+        }
+
+        val mergedPeers = grouped.values.map { group ->
+            if (group.size == 1) {
+                group.first()
             } else {
-                peer
+                val sorted = group.sortedWith(
+                    compareBy<PeerDevice> { it.transport.priority }
+                        .thenByDescending { it.ipAddress?.startsWith("192.168.49.") == true }
+                        .thenByDescending { it.lastSeenMs }
+                )
+                val primary = sorted.first()
+                val secondaryLan = sorted.firstOrNull {
+                    it.ipAddress != null && it.ipAddress != primary.ipAddress &&
+                        !it.ipAddress.startsWith("192.168.49.")
+                }
+                val bestSsidPeer = sorted.firstOrNull { !it.p2pSsid.isNullOrBlank() }
+                val primaryIp = primary.ipAddress ?: ""
+                val fallbackIp = secondaryLan?.ipAddress
+                val mergedFreq = bestSsidPeer?.p2pFreqMhz ?: primary.p2pFreqMhz
+                primary.copy(
+                    p2pSsid = primary.p2pSsid ?: bestSsidPeer?.p2pSsid,
+                    p2pPassphrase = primary.p2pPassphrase ?: bestSsidPeer?.p2pPassphrase,
+                    p2pFreqMhz = mergedFreq,
+                    fallbackLanIp = fallbackIp,
+                    customBadgeText = buildBadgeForPeer(primary.transport, primaryIp, mergedFreq, fallbackIp),
+                    customSubtitleText = buildSubtitleForPeer(primary.deviceModel, primary.transport, primaryIp, fallbackIp)
+                )
             }
         }
+
         onLanPeersChanged(
-            disambiguated.sortedWith(
+            mergedPeers.sortedWith(
                 compareBy<PeerDevice> { it.transport.priority }.thenBy { it.alias }
             )
         )

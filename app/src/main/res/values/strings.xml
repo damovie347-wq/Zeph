@@ -16,7 +16,7 @@
 
     <string name="nearby_devices">Yakınınızdaki cihazlar</string>
     <string name="troubleshoot">Sorun Giderme</string>
-    <string name="tip_same_wifi">Lütfen hedef cihaz ile aynı wifi ağında olduğunuzdan emin olun.</string>
+    <string name="tip_same_wifi">Hedef cihaza dokunmanız yeterlidir: 5 GHz / 6 GHz Doğrudan Köprü otomatik kurulur.</string>
     <string name="tip_share_sheet">Dosyalarınızı daha kolay seçmek için cihazınızın "Paylaş" özelliğini kullanabilirsiniz.</string>
 
     <string name="btn_edit">Düzenle</string>
@@ -32,7 +32,7 @@
     <string name="sheet_add_subtitle">Ne eklemek istiyorsunuz ?</string>
 
     <string name="apk_picker_title">Uygulamalar (APK)</string>
-    <string name="apk_select_multiple">Select Multiple Apps</string>
+    <string name="apk_select_multiple">Çoklu Uygulama Seç</string>
 
     <string name="mode_single_recipient">Tek alıcı</string>
     <string name="mode_multi_recipient">Birden fazla alıcı</string>

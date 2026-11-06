@@ -12,9 +12,9 @@ import android.os.Build
 import android.os.Parcelable
 import android.provider.Settings
 import android.system.Os
-import android.system.OsConstants
 import androidx.core.content.ContextCompat
 import java.io.FileDescriptor
+import java.lang.reflect.Method
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -25,6 +25,11 @@ import java.util.concurrent.atomic.AtomicInteger
 object CompatibilityHelper {
 
     const val DEFAULT_DIRECT_PASSPHRASE: String = "zeph88889999"
+
+    // Standard Linux kernel <linux/fadvise.h> constants (identical across ARM64/ARM/x86_64 Android kernels)
+    private const val LINUX_POSIX_FADV_SEQUENTIAL: Int = 2
+    private const val LINUX_POSIX_FADV_WILLNEED: Int = 3
+    private const val LINUX_POSIX_FADV_DONTNEED: Int = 4
 
     private val PLACEHOLDER_NAMES = setOf(
         "kind carrot",
@@ -37,6 +42,44 @@ object CompatibilityHelper {
 
     private val staSuspendedByMccGuard = AtomicBoolean(false)
     private val suspendedNetworkId = AtomicInteger(-1)
+
+    // Cached reflective handle for `posix_fadvise` (hidden from public android.jar stubs in some SDK levels)
+    private val posixFadviseMethod: Method? by lazy {
+        try {
+            Os::class.java.getMethod(
+                "posix_fadvise",
+                FileDescriptor::class.java,
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun invokePosixFadviseCompat(fd: FileDescriptor, offset: Long, length: Long, advice: Int) {
+        try {
+            val m = posixFadviseMethod
+            if (m != null) {
+                m.invoke(null, fd, offset, length, advice)
+                return
+            }
+            val libcoreClass = Class.forName("libcore.io.Libcore")
+            val osField = libcoreClass.getDeclaredField("os")
+            osField.isAccessible = true
+            val osInstance = osField.get(null) ?: return
+            val fadvMethod = osInstance.javaClass.getMethod(
+                "posix_fadvise",
+                FileDescriptor::class.java,
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType
+            )
+            fadvMethod.invoke(osInstance, fd, offset, length, advice)
+        } catch (_: Throwable) {
+        }
+    }
 
     @Suppress("DEPRECATION")
     fun <T : Parcelable> getParcelableExtraCompat(intent: Intent, key: String, clazz: Class<T>): T? {
@@ -100,16 +143,6 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * MCC (Multi-Channel Concurrency) Koruması:
-     * Ev Wi-Fi modemi (wlan0) örneğin 5280 MHz (DFS Kanal 56) veya 2.4 GHz'deyken, 5 GHz Doğrudan Köprü (p2p0)
-     * 5745 / 5765 MHz'de kurulduğunda tek radyo iki farklı kanal arasında her 50 ms'de bir zaman dilimlemesi (MCC)
-     * yapar ve hız ~100 MB/s yerine 6 MB/s'ye düşer.
-     *
-     * Bu metot, P2P bağlantısı (192.168.49.x) kurulduktan hemen sonra çağrılarak çakışan modem (wlan0) bağlantısını
-     * aktarım süresince geçici olarak ayırır (böylece radyo %100 SCC modunda 5 GHz P2P kanalına kilitlenir).
-     * Aktarım bittiğinde veya iptal edildiğinde [restoreSuspendedStaWifi] otomatik olarak modeme yeniden bağlar.
-     */
     @Suppress("DEPRECATION")
     fun suspendConflictingStaWifiForMcc(context: Context, p2pFreqMhz: Int): Boolean {
         try {
@@ -144,10 +177,6 @@ object CompatibilityHelper {
         return false
     }
 
-    /**
-     * Aktarım tamamlandığında veya iptal edildiğinde, MCC koruması tarafından geçici olarak ayrılan
-     * ev modemi (wlan0) bağlantısını otomatik olarak geri yükler.
-     */
     @Suppress("DEPRECATION")
     fun restoreSuspendedStaWifi(context: Context) {
         if (!staSuspendedByMccGuard.compareAndSet(true, false)) return
@@ -168,37 +197,21 @@ object CompatibilityHelper {
         }
     }
 
-    /**
-     * Linux çekirdeği sayfa önbelleği (Page Cache) optimizasyonu:
-     * Okuyucu tarafta ardışık okuma (POSIX_FADV_SEQUENTIAL + WILLNEED) bildirimi yapar.
-     */
     fun applySequentialReadFadvise(fd: FileDescriptor, totalBytes: Long) {
         if (totalBytes <= 0L) return
-        try {
-            Os.posix_fadvise(fd, 0L, totalBytes, OsConstants.POSIX_FADV_SEQUENTIAL)
-            val prefetchLen = totalBytes.coerceAtMost(16L * 1024L * 1024L)
-            Os.posix_fadvise(fd, 0L, prefetchLen, OsConstants.POSIX_FADV_WILLNEED)
-        } catch (_: Throwable) {
-        }
+        val prefetchLen = totalBytes.coerceAtMost(16L * 1024L * 1024L)
+        invokePosixFadviseCompat(fd, 0L, totalBytes, LINUX_POSIX_FADV_SEQUENTIAL)
+        invokePosixFadviseCompat(fd, 0L, prefetchLen, LINUX_POSIX_FADV_WILLNEED)
     }
 
-    /**
-     * Alıcı tarafta ~2.0 GB'ta oluşan Linux dirty_ratio (balance_dirty_pages) tıkanmasını önler:
-     * Yazma imlecinin gerisinde kalan 32 MB'lık pencereler için POSIX_FADV_DONTNEED çağrısı yaparak
-     * çekirdeğin kirli sayfaları bloklamadan arka planda (WB_SYNC_NONE) UFS'e boşaltmasını ve temizlenen
-     * sayfaları RAM'den düşürmesini sağlar. İlk 4 MB (MP4 başlığı) önbellekte tutulur.
-     */
     fun applySequentialWriteBehindFadvise(fd: FileDescriptor, writtenCursorBytes: Long) {
         val windowBytes = 32L * 1024L * 1024L
         if (writtenCursorBytes < windowBytes * 2) return
-        try {
-            val recentStart = (writtenCursorBytes - windowBytes * 2).coerceAtLeast(4L * 1024L * 1024L)
-            Os.posix_fadvise(fd, recentStart, windowBytes, OsConstants.POSIX_FADV_DONTNEED)
-            if (writtenCursorBytes >= windowBytes * 3) {
-                val olderStart = (writtenCursorBytes - windowBytes * 3).coerceAtLeast(4L * 1024L * 1024L)
-                Os.posix_fadvise(fd, olderStart, windowBytes, OsConstants.POSIX_FADV_DONTNEED)
-            }
-        } catch (_: Throwable) {
+        val recentStart = (writtenCursorBytes - windowBytes * 2).coerceAtLeast(4L * 1024L * 1024L)
+        invokePosixFadviseCompat(fd, recentStart, windowBytes, LINUX_POSIX_FADV_DONTNEED)
+        if (writtenCursorBytes >= windowBytes * 3) {
+            val olderStart = (writtenCursorBytes - windowBytes * 3).coerceAtLeast(4L * 1024L * 1024L)
+            invokePosixFadviseCompat(fd, olderStart, windowBytes, LINUX_POSIX_FADV_DONTNEED)
         }
     }
 

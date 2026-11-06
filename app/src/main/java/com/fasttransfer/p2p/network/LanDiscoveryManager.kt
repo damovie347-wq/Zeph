@@ -113,9 +113,11 @@ class LanDiscoveryManager(
                 "⚡ $freqLabel Doğrudan Köprü (Aktif • ~95-125 MB/s)"
             ConnectionTransport.DIRECT_HOTSPOT ->
                 "⚡ Doğrudan Hotspot Köprüsü (Aktif • ~95-120 MB/s)"
-            ConnectionTransport.WIFI_DIRECT_READY ->
+            ConnectionTransport.WIFI_DIRECT_READY,
+            ConnectionTransport.AUTO_HIGH_SPEED_BRIDGE ->
                 "🚀 Otomatik Yüksek Hızlı Köprü ($freqLabel • ~90-120 MB/s)"
-            ConnectionTransport.LAN_MODEM ->
+            ConnectionTransport.LAN_MODEM,
+            ConnectionTransport.LAN_HOTSPOT ->
                 "📶 Modem Ağı → Tıklayınca Otomatik 5 GHz Köprü (~90-120 MB/s)"
         }
     }
@@ -136,9 +138,11 @@ class LanDiscoveryManager(
             }
             ConnectionTransport.DIRECT_HOTSPOT ->
                 "$model • Doğrudan Hotspot: $ip"
-            ConnectionTransport.WIFI_DIRECT_READY ->
+            ConnectionTransport.WIFI_DIRECT_READY,
+            ConnectionTransport.AUTO_HIGH_SPEED_BRIDGE ->
                 "$model • $ip (Otomatik 5 GHz Köprü Hazır)"
-            ConnectionTransport.LAN_MODEM ->
+            ConnectionTransport.LAN_MODEM,
+            ConnectionTransport.LAN_HOTSPOT ->
                 "$model • Modem Ağı: $ip (Otomatik 5 GHz Köprü Destekli)"
         }
     }
@@ -500,18 +504,6 @@ class LanDiscoveryManager(
         }
     }
 
-    /**
-     * V14 UI CLARITY & DEDUPLICATION:
-     * Previously, when a peer was visible on both `192.168.49.1` (P2P Direct Bridge) and
-     * `192.168.1.92` (Home Router), `notifyPeersUpdated()` mutated their aliases to
-     * `Redmi Note 13 Pro+ 5G (#1)` and `Redmi Note 13 Pro+ 5G (#92)`, creating two duplicate
-     * truncated rows in the UI (seen at 04:08 in the Galaxy S10+ video).
-     *
-     * Now we group entries belonging to the same `deviceTag` or normalized `alias`, merge them
-     * into a SINGLE unified `PeerDevice` with the fastest transport (`192.168.49.x` or hotspot IP)
-     * as the primary `ipAddress` and the router IP saved in `fallbackLanIp`, with a crystal-clear
-     * badge and speed estimate!
-     */
     private fun notifyPeersUpdated() {
         val rawList = peersByIp.values.toList()
         val grouped = rawList.groupBy { peer ->
